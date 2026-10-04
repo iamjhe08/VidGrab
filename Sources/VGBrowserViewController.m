@@ -83,7 +83,9 @@ static NSString *const kOverlayJS = @""
     WKWebViewConfiguration *cfg = [WKWebViewConfiguration new];
     cfg.allowsInlineMediaPlayback = YES;
     cfg.allowsPictureInPictureMediaPlayback = YES;
-    cfg.applicationNameForUserAgent = @"Version/17.0 Mobile/15E148 Safari/604.1";
+    // Tell sites the real iOS version, so older iPhones get code their web engine can run.
+    NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
+    cfg.applicationNameForUserAgent = [NSString stringWithFormat:@"Version/%ld.%ld Mobile/15E148 Safari/604.1", (long)os.majorVersion, (long)os.minorVersion];
     cfg.websiteDataStore = WKWebsiteDataStore.defaultDataStore;  // remembers sign-ins
     [cfg.userContentController addScriptMessageHandler:self name:@"vidgrab"];
     self.web = [[WKWebView alloc] initWithFrame:CGRectZero configuration:cfg];
@@ -220,6 +222,11 @@ static NSString *const kOverlayJS = @""
 - (void)installScripts {
     WKUserContentController *ucc = self.web.configuration.userContentController;
     [ucc removeAllUserScripts];
+    // On iOS 15 and 16, add the newer JavaScript features modern sites expect (runs before the page's own code).
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 17) {
+        NSString *poly = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"polyfills" ofType:@"js"] encoding:NSUTF8StringEncoding error:nil];
+        if (poly.length) [ucc addUserScript:[[WKUserScript alloc] initWithSource:poly injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
+    }
     [ucc addUserScript:[[WKUserScript alloc] initWithSource:kOverlayJS injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:NO]];
     if ([VGBlocker shared].enabled && [VGBlocker shared].skipYouTubeAds) {
         [ucc addUserScript:[[WKUserScript alloc] initWithSource:[VGBlocker youTubeAdSkipScript]

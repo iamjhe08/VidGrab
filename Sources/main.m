@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "VGEngine.h"
+#import "VGUpdater.h"
 #import "VGTheme.h"
 #import "VGHomeViewController.h"
 #import "VGDownloadsViewController.h"
@@ -80,6 +81,10 @@
     self.window.tintColor = VGAccent;
     self.window.rootViewController = self.tabs;
     [self.window makeKeyAndVisible];
+    // Look for a newer VidGrab on GitHub a few seconds after opening (at most twice a day).
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [VGUpdater checkQuietlyFrom:self.tabs];
+    });
 
     // Download progress, visible on Home and Downloads (Browse shows it on its own button).
     self.tabs.delegate = self;

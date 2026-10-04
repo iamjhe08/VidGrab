@@ -4,6 +4,7 @@
 #import "VGCache.h"
 #import "VGActions.h"
 #import "VGSupportViewController.h"
+#import "VGUpdater.h"
 
 typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSectionSupport, VGSectionAbout, VGSectionCount };
 
@@ -50,7 +51,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSec
         case VGSectionStorage: return 3;
         case VGSectionEngine: return 2;
         case VGSectionSupport: return 1;
-        default: return 2;
+        default: return 3;
     }
 }
 
@@ -61,6 +62,8 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSec
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
     if (section == VGSectionStorage)
         return @"Cache is temporary files: engine scratch files, leftover partial downloads, saved site icons and the browser's page cache. Your downloaded videos, website sign-ins, favorites and ad-blocker settings are never removed.";
+    if (section == VGSectionAbout)
+        return @"VidGrab checks for new versions on its own when you open it. Updates keep your downloads and settings.";
     if (section == VGSectionEngine)
         return @"If downloads from a site stop working, update the engine. Sites change often and fixes arrive here first.";
     return nil;
@@ -125,6 +128,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSec
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return c;
     }
+    if (ip.row == 2) return [self cellWithTitle:@"Check for app updates" value:nil icon:@"arrow.down.app" tint:VGAccent];
     if (ip.row == 1) {
         UITableViewCell *c = [self cellWithTitle:@"GitHub" value:@"@iamjhe08" icon:@"chevron.left.forwardslash.chevron.right" tint:nil];
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -140,6 +144,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSec
     if (ip.section == VGSectionStorage && ip.row == 1) [self clearCache];
     else if (ip.section == VGSectionEngine && ip.row == 1) [self updateEngine];
     else if (ip.section == VGSectionSupport) [[VGSupportViewController new] presentFrom:self];
+    else if (ip.section == VGSectionAbout && ip.row == 2) [VGUpdater checkNowFrom:self];
     else if (ip.section == VGSectionAbout && ip.row == 1)
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/iamjhe08"] options:@{} completionHandler:nil];
 }
