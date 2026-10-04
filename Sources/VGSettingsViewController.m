@@ -63,7 +63,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionStorage, VGSectionEngine, VGSec
     if (section == VGSectionStorage)
         return @"Cache is temporary files: engine scratch files, leftover partial downloads, saved site icons and the browser's page cache. Your downloaded videos, website sign-ins, favorites and ad-blocker settings are never removed.";
     if (section == VGSectionAbout)
-        return @"VidGrab checks for new versions on its own when you open it. Updates keep your downloads and settings.";
+        return @"VidGrab checks for new versions every time you open it. Updates keep your downloads and settings.";
     if (section == VGSectionEngine)
         return @"If downloads from a site stop working, update the engine. Sites change often and fixes arrive here first.";
     return nil;

@@ -81,9 +81,15 @@
     self.window.tintColor = VGAccent;
     self.window.rootViewController = self.tabs;
     [self.window makeKeyAndVisible];
-    // Look for a newer VidGrab on GitHub a few seconds after opening (at most twice a day).
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Look for a newer VidGrab on GitHub every time the app opens or comes back to the front.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [VGUpdater checkQuietlyFrom:self.tabs];
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification object:nil
+                                                         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [VGUpdater checkQuietlyFrom:self.tabs];
+            });
+        }];
     });
 
     // Download progress, visible on Home and Downloads (Browse shows it on its own button).

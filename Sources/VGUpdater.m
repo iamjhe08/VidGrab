@@ -5,6 +5,7 @@
 static NSString *const kRepo = @"iamjhe08/VidGrab";
 static NSString *const kLastCheck = @"vgUpdateLastCheck";
 static NSString *const kSkipped = @"vgUpdateSkipped";
+static BOOL gShowing = NO;   // the update screen is on screen right now
 
 @implementation VGUpdater
 
@@ -46,6 +47,27 @@ static NSString *clean(NSString *tag) {
     }] resume];
 }
 
+/// Which TrollStore installed this copy: @"TrollStore", @"TrollStore Lite", or nil.
+/// iOS doesn't let apps look at the folder around them, so this checks the app itself instead:
+/// - it must be a normally installed app (not running inside LiveContainer or similar), and
+/// - it must have no signing profile (embedded.mobileprovision). AltStore, SideStore, Sideloadly,
+///   ESign and other sideloading tools always add one; TrollStore doesn't.
+/// If iOS does allow a look around, TrollStore's own marker file (.TrollStore / .TrollStoreLite) also counts.
++ (NSString *)trollStoreFlavor {
+    NSString *bundle = NSBundle.mainBundle.bundlePath;
+    NSString *container = bundle.stringByDeletingLastPathComponent;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *m in @[@".TrollStoreLite", @"_TrollStoreLite"])
+        if ([fm fileExistsAtPath:[container stringByAppendingPathComponent:m]]) return @"TrollStore Lite";
+    for (NSString *m in @[@".TrollStore", @"_TrollStore"])
+        if ([fm fileExistsAtPath:[container stringByAppendingPathComponent:m]]) return @"TrollStore";
+    BOOL installedApp = [bundle hasPrefix:@"/private/var/containers/Bundle/Application/"] || [bundle hasPrefix:@"/var/containers/Bundle/Application/"];
+    BOOL hasProfile = [fm fileExistsAtPath:[bundle stringByAppendingPathComponent:@"embedded.mobileprovision"]];
+    return (installedApp && !hasProfile) ? @"TrollStore" : nil;
+}
+
++ (BOOL)installedByTrollStore { return [self trollStoreFlavor] != nil; }
+
 + (BOOL)isNewer:(NSString *)v {
     return [v compare:[self currentVersion] options:NSNumericSearch] == NSOrderedDescending;
 }
@@ -86,23 +108,22 @@ static NSString *clean(NSString *tag) {
 
 + (void)offer:(NSString *)version notes:(NSString *)notes ipa:(NSString *)ipa page:(NSString *)page from:(UIViewController *)host quiet:(BOOL)quiet {
     UIViewController *vc = [UIViewController new];
-    vc.view.backgroundColor = VGSurface;
+    // A card in the middle of the screen over a dimmed background.
+    vc.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
     vc.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    vc.modalPresentationStyle = UIModalPresentationPageSheet;
-    vc.sheetPresentationController.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
-    vc.sheetPresentationController.prefersGrabberVisible = YES;
-    vc.sheetPresentationController.preferredCornerRadius = 22;
+    vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
 
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.app.fill"
         withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:34 weight:UIImageSymbolWeightSemibold]]];
     icon.tintColor = VGAccent;
-    icon.contentMode = UIViewContentModeLeft;
+    icon.contentMode = UIViewContentModeCenter;
     UILabel *title = [UILabel new];
     title.text = [NSString stringWithFormat:@"VidGrab %@ is available", version];
-    title.font = VGFont(24, UIFontWeightHeavy); title.textColor = VGText; title.numberOfLines = 0;
+    title.font = VGFont(22, UIFontWeightHeavy); title.textColor = VGText; title.numberOfLines = 0; title.textAlignment = NSTextAlignmentCenter;
     UILabel *sub = [UILabel new];
     sub.text = [NSString stringWithFormat:@"You have %@. Your downloads and settings stay after updating.", [self currentVersion]];
-    sub.font = VGFont(14, UIFontWeightMedium); sub.textColor = VGSecondary; sub.numberOfLines = 0;
+    sub.font = VGFont(14, UIFontWeightMedium); sub.textColor = VGSecondary; sub.numberOfLines = 0; sub.textAlignment = NSTextAlignmentCenter;
     UILabel *whatsNew = [UILabel new];
     whatsNew.attributedText = [[NSAttributedString alloc] initWithString:@"WHAT'S NEW" attributes:@{NSKernAttributeName: @1.0,
         NSFontAttributeName: VGFont(12, UIFontWeightHeavy), NSForegroundColorAttributeName: VGTertiary}];
@@ -117,18 +138,39 @@ static NSString *clean(NSString *tag) {
     log.dataDetectorTypes = UIDataDetectorTypeLink;
 
     __weak UIViewController *wvc = vc;
-    void (^close)(void (^)(void)) = ^(void (^then)(void)) { [wvc dismissViewControllerAnimated:YES completion:then]; };
+    gShowing = YES;
+    void (^close)(void (^)(void)) = ^(void (^then)(void)) {
+        gShowing = NO;
+        [wvc dismissViewControllerAnimated:YES completion:then];
+    };
     NSMutableArray *buttons = [NSMutableArray array];
-    NSURL *troll = ipa ? [NSURL URLWithString:[@"apple-magnifier://install?url=" stringByAppendingString:
+    NSURL *troll = ipa.length ? [NSURL URLWithString:[@"apple-magnifier://install?url=" stringByAppendingString:
                           [ipa stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]]] : nil;
-    BOOL hasTroll = troll && [UIApplication.sharedApplication canOpenURL:troll];
-    NSString *dl = page ?: [NSString stringWithFormat:@"https://github.com/%@/releases/latest", kRepo];
+    // Only apps installed by TrollStore can update through it. TrollStore leaves a "_TrollStore"
+    // marker next to the app; anything else (LiveContainer, AltStore, sideloading) gets a greyed-out button.
+    BOOL hasTroll = troll && [self installedByTrollStore];
+    NSString *dl = page.length ? page : [NSString stringWithFormat:@"https://github.com/%@/releases/latest", kRepo];
+    NSString *trollName = [@"Install with " stringByAppendingString:[self trollStoreFlavor] ?: @"TrollStore"];
+    UIButton *b = hasTroll ? VGPrimaryButton(trollName, @"arrow.down.circle.fill")
+                           : VGSecondaryButton(trollName, @"arrow.down.circle.fill");
     if (hasTroll) {
-        UIButton *b = VGPrimaryButton(@"Install with TrollStore", @"arrow.down.circle.fill");
         [b addAction:[UIAction actionWithHandler:^(UIAction *x) {
             close(^{ [UIApplication.sharedApplication openURL:troll options:@{} completionHandler:nil]; });
         }] forControlEvents:UIControlEventTouchUpInside];
         [buttons addObject:b];
+    } else if (troll) {
+        b.enabled = NO;
+        b.alpha = 0.4;
+        UILabel *why = [UILabel new];
+        why.text = @"Only for VidGrab installed with TrollStore. Use the download page instead.";
+        why.font = VGFont(12, UIFontWeightMedium);
+        why.textColor = VGTertiary;
+        why.textAlignment = NSTextAlignmentCenter;
+        why.numberOfLines = 0;
+        UIStackView *pair = [[UIStackView alloc] initWithArrangedSubviews:@[b, why]];
+        pair.axis = UILayoutConstraintAxisVertical;
+        pair.spacing = 6;
+        [buttons addObject:pair];
     }
     UIButton *open = hasTroll ? VGSecondaryButton(@"Open download page", @"safari") : VGPrimaryButton(@"Open download page", @"safari");
     [open addAction:[UIAction actionWithHandler:^(UIAction *x) {
@@ -160,20 +202,40 @@ static NSString *clean(NSString *tag) {
     UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[icon, title, sub, whatsNew]];
     head.axis = UILayoutConstraintAxisVertical; head.spacing = 8;
     [head setCustomSpacing:12 afterView:icon];
-    [head setCustomSpacing:20 afterView:sub];
+    [head setCustomSpacing:18 afterView:sub];
     UIStackView *foot = [[UIStackView alloc] initWithArrangedSubviews:buttons];
     foot.axis = UILayoutConstraintAxisVertical; foot.spacing = 10;
     UIStackView *root = [[UIStackView alloc] initWithArrangedSubviews:@[head, log, foot]];
     root.axis = UILayoutConstraintAxisVertical; root.spacing = 14;
     root.translatesAutoresizingMaskIntoConstraints = NO;
-    [vc.view addSubview:root];
+    UIView *card = [UIView new];
+    card.backgroundColor = VGSurface;
+    card.layer.cornerRadius = 24;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderColor = VGStroke.CGColor;
+    card.layer.borderWidth = 1;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:root];
+    [vc.view addSubview:card];
     UILayoutGuide *g = vc.view.safeAreaLayoutGuide;
+    NSLayoutConstraint *wide = [card.widthAnchor constraintEqualToConstant:400];
+    wide.priority = UILayoutPriorityDefaultHigh;
+    NSLayoutConstraint *logH = [log.heightAnchor constraintEqualToConstant:MIN(260, MAX(90, [log sizeThatFits:CGSizeMake(330, CGFLOAT_MAX)].height))];
+    logH.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [root.topAnchor constraintEqualToAnchor:g.topAnchor constant:28],
-        [root.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-12],
-        [root.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:22],
-        [root.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-22],
-        [log.heightAnchor constraintGreaterThanOrEqualToConstant:90],
+        [card.centerXAnchor constraintEqualToAnchor:g.centerXAnchor],
+        [card.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+        wide,
+        [card.leadingAnchor constraintGreaterThanOrEqualToAnchor:g.leadingAnchor constant:20],
+        [card.trailingAnchor constraintLessThanOrEqualToAnchor:g.trailingAnchor constant:-20],
+        [card.topAnchor constraintGreaterThanOrEqualToAnchor:g.topAnchor constant:20],
+        [card.bottomAnchor constraintLessThanOrEqualToAnchor:g.bottomAnchor constant:-20],
+        [root.topAnchor constraintEqualToAnchor:card.topAnchor constant:24],
+        [root.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
+        [root.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [root.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        logH,
+        [log.heightAnchor constraintGreaterThanOrEqualToConstant:70],
     ]];
 
     UIViewController *top = host;
@@ -181,16 +243,60 @@ static NSString *clean(NSString *tag) {
     [top presentViewController:vc animated:YES completion:nil];
 }
 
+/// Shows the update screen once the app is settled (waits if something else is on screen).
++ (void)present:(NSDictionary *)rel from:(UIViewController *)host tries:(int)tries {
+    if (gShowing) return;
+    UIViewController *top = host;
+    while (top.presentedViewController) top = top.presentedViewController;
+    BOOL busy = !host.view.window || top.isBeingPresented || top.isBeingDismissed || [top isKindOfClass:UIAlertController.class];
+    if (busy) {
+        if (tries > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self present:rel from:host tries:tries - 1];
+        });
+        return;
+    }
+    [self offer:rel[@"v"] notes:rel[@"n"] ipa:rel[@"i"] page:rel[@"p"] from:host quiet:YES];
+}
+
 + (void)checkQuietlyFrom:(UIViewController *)host {
+    // Runs every time the app opens. GitHub is asked at most once a minute; in between,
+    // the last answer is reused so the update screen still shows on every open.
+    if (gShowing) {
+        UIViewController *top = host;
+        while (top.presentedViewController) top = top.presentedViewController;
+        if (top != host) return;     // still on screen
+        gShowing = NO;               // it was swiped away
+    }
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    void (^decide)(NSDictionary *) = ^(NSDictionary *rel) {
+        NSString *v = rel[@"v"];
+        if (!v.length || ![self isNewer:v]) return;
+        if ([[d stringForKey:kSkipped] isEqualToString:v]) return;
+        [self present:rel from:host tries:6];
+    };
     NSDate *last = [d objectForKey:kLastCheck];
-    if (last && -last.timeIntervalSinceNow < 12 * 3600) return;
-    [d setObject:[NSDate date] forKey:kLastCheck];
-    [self fetch:^(NSString *version, NSString *notes, NSString *ipa, NSString *page, NSString *problem) {
-        if (problem || ![self isNewer:version]) return;
-        if ([[d stringForKey:kSkipped] isEqualToString:version]) return;
-        [self offer:version notes:notes ipa:ipa page:page from:host quiet:YES];
-    }];
+    NSDictionary *cached = [d dictionaryForKey:@"vgUpdateLatest"];
+    if (last && -last.timeIntervalSinceNow < 60 && cached) { decide(cached); return; }
+    __block int attempts = 0;
+    __block void (^ask)(void);
+    void (^askOnce)(void) = ^{
+        attempts++;
+        [self fetch:^(NSString *version, NSString *notes, NSString *ipa, NSString *page, NSString *problem) {
+            if (problem) {
+                // The first request right after opening can fail while the connection wakes up; try again shortly.
+                if (attempts < 3) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ask);
+                else ask = nil;
+                return;
+            }
+            ask = nil;
+            NSDictionary *rel = @{@"v": version ?: @"", @"n": notes ?: @"", @"i": ipa ?: @"", @"p": page ?: @""};
+            [d setObject:[NSDate date] forKey:kLastCheck];
+            [d setObject:rel forKey:@"vgUpdateLatest"];
+            decide(rel);
+        }];
+    };
+    ask = askOnce;
+    ask();
 }
 
 + (void)checkNowFrom:(UIViewController *)host {
