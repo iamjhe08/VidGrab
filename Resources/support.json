@@ -1,0 +1,8 @@
+{
+  "title": "Buy me a coffee",
+  "message": "VidGrab is free, open source, and has no ads. If it saves you time, you can support development with a coffee. Thank you!",
+  "methods": [
+    {"name": "Wise", "link": "https://wise.com/pay/me/jerometajanb", "qr": "wise-qr.png"},
+    {"name": "PayPal", "link": "https://www.paypal.com/qrcodes/p2pqrc/DRQH7P6CE8X8L", "qr": "paypal-qr.png"}
+  ]
+}

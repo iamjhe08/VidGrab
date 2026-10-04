@@ -1,0 +1,30 @@
+{
+ "version": "202610040357",
+ "files": [
+  "network-1.json",
+  "network-2.json",
+  "network-3.json",
+  "network-4.json",
+  "network-5.json",
+  "network-6.json",
+  "cosmetic-generic.json",
+  "cosmetic-sites-1.json"
+ ],
+ "sources": [
+  "uBlock filters: 23354 filters read",
+  "uBlock filters - Privacy: 1806 filters read",
+  "uBlock filters - Unbreak: 2534 filters read",
+  "uBlock filters - Quick fixes: 355 filters read",
+  "uBlock Origin Lite filters: 140 filters read",
+  "EasyList: 78984 filters read",
+  "EasyPrivacy: 56178 filters read",
+  "Peter Lowe's list: 3551 servers"
+ ],
+ "stats": {
+  "network": 114338,
+  "exceptions": 3472,
+  "skipped": 18570,
+  "cosmetic_generic": 13476,
+  "cosmetic_specific": 13827
+ }
+}

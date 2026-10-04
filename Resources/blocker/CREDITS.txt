@@ -1,0 +1,22 @@
+VidGrab's browser ad blocker uses the same filter lists that uBlock Origin Lite
+uses by default, converted to Apple's content-blocker format. Rules that iOS
+cannot express (scripts, redirects, and some advanced filters) are left out.
+
+uBlock filters, Privacy, Unbreak, Quick fixes, uBO Lite filters
+  https://github.com/uBlockOrigin/uAssets
+  License: GNU General Public License v3.0
+
+EasyList and EasyPrivacy
+  https://easylist.to/
+  License: GNU General Public License v3.0, or Creative Commons Attribution-ShareAlike 3.0
+
+Peter Lowe's Ad and tracking server list
+  https://pgl.yoyo.org/adservers/
+  License: McRae General Public License (free for non-commercial use)
+
+VidGrab is not affiliated with uBlock Origin or the list authors.
+
+----
+Video and audio conversion uses FFmpeg (https://ffmpeg.org, LGPL 2.1 or later)
+and LAME for MP3 (https://lame.sourceforge.io, LGPL 2). Downloads use yt-dlp
+(https://github.com/yt-dlp/yt-dlp, Unlicense) running on Python (PSF License).
