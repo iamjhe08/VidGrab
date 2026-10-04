@@ -28,7 +28,7 @@
     return l;
 }
 
-/// One "label / value / copy" row on the Wise card.
+/// One "label / value / copy" row.
 - (UIView *)rowTitle:(NSString *)title value:(NSString *)value {
     UILabel *t = [self label:VGFont(12, UIFontWeightHeavy) color:VGTertiary];
     t.attributedText = [[NSAttributedString alloc] initWithString:title.uppercaseString attributes:@{NSKernAttributeName: @0.8}];
@@ -191,7 +191,7 @@
     top.spacing = 10;
     [top setCustomSpacing:16 afterView:badge];
 
-    // One card per payment method (Wise, PayPal), each with its QR code.
+    // One card per payment method, each with its QR code.
     NSMutableArray *cards = [NSMutableArray array];
     NSArray *methods = [cfg[@"methods"] isKindOfClass:NSArray.class] ? cfg[@"methods"] : @[];
     for (NSDictionary *m in methods) {

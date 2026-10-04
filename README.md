@@ -1,50 +1,62 @@
-# VidGrab 1.0.0
+# VidGrab
 
-Download videos on iPhone by pasting a link or by browsing to a video and tapping Download.
+A video downloader for iPhone. Paste a link, pick a quality, done. Or open the built-in browser, play a video, and tap the Download button that pops up on it.
 
-By T4MAG0 · https://github.com/iamjhe08
+I made this because I wanted something simple that just works on my phone, without jailbreak tweaks or a pile of extra packages to install.
 
-## Features
-- Paste a link and pick the quality, up to 4K when the site offers it
-- Built-in browser with a Download button on playing videos and an ad blocker
-- Up to 10 downloads at the same time, with progress on every screen
-- Saves as MP4 that plays on iPhone and goes into Photos; MP3 or M4A for sound only
-- YouTube downloads keep the original audio language
-- Editable favorites, cache cleaning, Fix playback and Video info tools
+Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 
-## Requirements
-- iOS 15.0 or later, arm64
-- Installed with TrollStore or any sideloading method (no jailbreak needed)
+## What it can do
 
-## Built with
-- yt-dlp (Unlicense)
-- Python 3.14 for iOS, BeeWare Python-Apple-support (PSF License)
-- FFmpeg 7.1.1 (LGPL 2.1 or later), built from unmodified source as static libraries
-- LAME 3.100 (LGPL)
-- certifi (MPL 2.0), requests and urllib3 (Apache 2.0 / MIT), idna (BSD), charset-normalizer (MIT), websockets (BSD)
-- Ad-block filter lists from uBlock Origin Lite defaults (GPLv3) and Peter Lowe's list (free for non-commercial use)
+- Download from YouTube and lots of other sites, up to 4K when the site has it
+- Browse sites inside the app and grab whatever video is playing
+- Ad blocker in the browser
+- Run up to 10 downloads at the same time
+- Saves videos as MP4 so they play right away and can go into Photos
+- Save just the sound as MP3 or M4A
+- Keeps YouTube videos in their original language instead of a dubbed track
+- Favorites you can add, rename and rearrange
+- Clear the cache by hand or automatically every time the app opens
+- A "Fix playback" button for videos that won't play properly
 
 ## Install
-Download VidGrab.ipa from the Releases page and install it with TrollStore or your sideloading app.
 
-## Building from source
-Built on Linux or macOS with Theos (iOS 16.5 SDK, targets iOS 15.0, arm64).
+1. Go to the [Releases](../../releases) page and download the latest `VidGrab.ipa`.
+2. Install it with TrollStore, or any sideloading app you already use.
 
-You also need:
-- Python.xcframework from BeeWare Python-Apple-support (3.14), with the ios-arm64 Python.framework copied to `vendor/ios-arm64`
-- FFmpeg 7.1.1 and LAME 3.100 built as static iOS libraries (decoders, demuxers and muxers listed in the Makefile flags)
-- yt-dlp and the Python packages listed above, installed for iOS into an app_packages folder
+Works on iOS 15 and newer. No jailbreak needed.
 
-Paths to these are set at the top of `Makefile` and `assemble.py`. Then run:
+## Credits
+
+VidGrab wouldn't exist without **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**. It's the engine that does the real work of finding and downloading videos from all these sites. Huge thanks to the yt-dlp developers and everyone who keeps it working as sites change. If a site breaks, VidGrab can update yt-dlp from Settings, so fixes from their team reach you quickly.
+
+Also used:
+
+- [FFmpeg](https://ffmpeg.org) for joining video and sound and converting files (LGPL 2.1 or later)
+- [LAME](https://lame.sourceforge.io) for MP3 (LGPL)
+- [Python for iOS](https://github.com/beeware/Python-Apple-support) by BeeWare, which lets yt-dlp run on iPhone (PSF License)
+- certifi, requests, urllib3, idna, charset-normalizer and websockets (Python packages yt-dlp relies on)
+- Ad-block filter lists from [uBlock Origin Lite](https://github.com/uBlockOrigin/uBOL-home) (GPLv3) and [Peter Lowe's list](https://pgl.yoyo.org/adservers/) (free for non-commercial use)
+
+## Building it yourself
+
+You'll need Theos (iOS 16.5 SDK) on Linux or macOS, plus:
+
+- BeeWare's Python.xcframework (3.14), with `ios-arm64/Python.framework` copied into `vendor/ios-arm64`
+- FFmpeg 7.1.1 and LAME 3.100 built as static iOS libraries
+- yt-dlp and its Python packages installed into an `app_packages` folder
+
+Set the paths at the top of `Makefile` and `assemble.py`, then:
 
 ```
 make FINALPACKAGE=1
 python3 assemble.py
 ```
 
-This produces `VidGrab.ipa`.
+You'll get `VidGrab.ipa` in the project folder.
 
 ## License
-VidGrab's own code is released under the GNU GPL v3 (see LICENSE). Bundled parts keep their own licenses as listed above.
 
-Please respect each site's terms and only download videos you have the right to save.
+GPL v3, see [LICENSE](LICENSE). The libraries listed above keep their own licenses.
+
+Please only download videos you're allowed to save, and respect each site's rules.
