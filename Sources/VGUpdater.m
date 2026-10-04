@@ -61,12 +61,20 @@ static NSString *clean(NSString *tag) {
         if ([fm fileExistsAtPath:[container stringByAppendingPathComponent:m]]) return @"TrollStore Lite";
     for (NSString *m in @[@".TrollStore", @"_TrollStore"])
         if ([fm fileExistsAtPath:[container stringByAppendingPathComponent:m]]) return @"TrollStore";
+    if ([self jailbreakInstall]) return nil;
     BOOL installedApp = [bundle hasPrefix:@"/private/var/containers/Bundle/Application/"] || [bundle hasPrefix:@"/var/containers/Bundle/Application/"];
     BOOL hasProfile = [fm fileExistsAtPath:[bundle stringByAppendingPathComponent:@"embedded.mobileprovision"]];
     return (installedApp && !hasProfile) ? @"TrollStore" : nil;
 }
 
 + (BOOL)installedByTrollStore { return [self trollStoreFlavor] != nil; }
+
+/// True when VidGrab was installed as a jailbreak package (.deb): rootful /Applications,
+/// rootless /var/jb/Applications, or roothide's hidden .jbroot folder. Those update through Sileo.
++ (BOOL)jailbreakInstall {
+    NSString *b = NSBundle.mainBundle.bundlePath;
+    return [b hasPrefix:@"/Applications/"] || [b hasPrefix:@"/var/jb/"] || [b hasPrefix:@"/private/preboot/"] || [b containsString:@"/.jbroot-"];
+}
 
 + (BOOL)isNewer:(NSString *)v {
     return [v compare:[self currentVersion] options:NSNumericSearch] == NSOrderedDescending;
@@ -151,6 +159,15 @@ static NSString *clean(NSString *tag) {
     BOOL hasTroll = troll && [self installedByTrollStore];
     NSString *dl = page.length ? page : [NSString stringWithFormat:@"https://github.com/%@/releases/latest", kRepo];
     NSString *trollName = [@"Install with " stringByAppendingString:[self trollStoreFlavor] ?: @"TrollStore"];
+    if ([self jailbreakInstall]) {
+        NSURL *sileo = [NSURL URLWithString:@"sileo://package/com.t4mag0.vidgrab"];
+        UIButton *sb = VGPrimaryButton(@"Update in Sileo", @"shippingbox.fill");
+        [sb addAction:[UIAction actionWithHandler:^(UIAction *x) {
+            close(^{ [UIApplication.sharedApplication openURL:sileo options:@{} completionHandler:nil]; });
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [buttons addObject:sb];
+        troll = nil;   // no TrollStore button for jailbreak installs
+    }
     UIButton *b = hasTroll ? VGPrimaryButton(trollName, @"arrow.down.circle.fill")
                            : VGSecondaryButton(trollName, @"arrow.down.circle.fill");
     if (hasTroll) {
@@ -172,7 +189,8 @@ static NSString *clean(NSString *tag) {
         pair.spacing = 6;
         [buttons addObject:pair];
     }
-    UIButton *open = hasTroll ? VGSecondaryButton(@"Open download page", @"safari") : VGPrimaryButton(@"Open download page", @"safari");
+    BOOL secondary = hasTroll || [self jailbreakInstall];
+    UIButton *open = secondary ? VGSecondaryButton(@"Open download page", @"safari") : VGPrimaryButton(@"Open download page", @"safari");
     [open addAction:[UIAction actionWithHandler:^(UIAction *x) {
         close(^{ [UIApplication.sharedApplication openURL:[NSURL URLWithString:dl] options:@{} completionHandler:nil]; });
     }] forControlEvents:UIControlEventTouchUpInside];
