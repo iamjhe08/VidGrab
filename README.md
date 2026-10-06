@@ -1,8 +1,8 @@
 # VidGrab
 
-A video downloader for iPhone/iPad. Paste a link, pick a quality, done. Or open the built-in browser, play a video, and tap the Download button that pops up on it.
+VidGrab is a video downloader for iPhone and iPad. Paste a link, choose your preferred quality, and download. You can also browse directly in the built-in browser, play a video, and use the Download button when it appears.
 
-I made this because I wanted something simple that just works on my phone, without jailbreak tweaks or a pile of extra packages to install.
+I made VidGrab to keep video downloading simple and straightforward, without requiring jailbreak tweaks or a bunch of additional packages.
 
 Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 
