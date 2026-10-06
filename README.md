@@ -9,10 +9,10 @@ Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/VidGrab-screenshot-1.jpg" alt="Home, quality picker and browser" width="100%">
+  <img src="VidGrab-screenshot-1.jpg" alt="Home, quality picker and browser" width="100%">
 </p>
 <p align="center">
-  <img src="screenshots/VidGrab-screenshot-2.jpg" alt="Downloading in the browser and the Downloads tab" width="100%">
+  <img src="VidGrab-screenshot-2.jpg" alt="Downloading in the browser and the Downloads tab" width="100%">
 </p>
 
 ## What it can do
