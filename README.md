@@ -6,6 +6,15 @@ I made this because I wanted something simple that just works on my phone, witho
 
 Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/vidgrab-1.jpg" alt="Home, quality picker and browser" width="100%">
+</p>
+<p align="center">
+  <img src="screenshots/vidgrab-2.jpg" alt="Downloading in the browser and the Downloads tab" width="100%">
+</p>
+
 ## What it can do
 
 - Download from YouTube and lots of other sites, up to 4K when the site has it
