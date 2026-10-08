@@ -1,0 +1,12 @@
+#ifdef __OBJC__
+    #import <Foundation/Foundation.h>
+    #import <UIKit/UIKit.h>
+    #import <os/log.h>
+#endif
+#define log_debug(...)
+#define log_info(...)
+#define log_error(...)
+#define FADE_OUT_DURATION 0.25
+// App -> overlay
+#define NOTIFY_DISMISSAL_HUD "com.t4mag0.vidgrab.hud.terminate"
+#define NOTIFY_UPDATE_HUD "com.t4mag0.vidgrab.hud.update"
