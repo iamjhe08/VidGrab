@@ -1,4 +1,5 @@
 #import "VGPython.h"
+#import <UIKit/UIKit.h>
 #import "VGCrash.h"
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <stdatomic.h>
@@ -137,14 +138,29 @@ static PyObject *PyInit_vgnative(void) { return PyModule_Create(&VGModule); }
     @synchronized (gLock) { [gHandlers removeObjectForKey:task]; [gCancelled removeObject:task]; }
 }
 
+// The error type, its message and where it happened, so a failed start can be diagnosed.
 static NSString *pyErrorString(void) {
-    if (!PyErr_Occurred()) return @"Unknown engine error.";
+    if (!PyErr_Occurred()) return @"Unknown engine error (no details).";
     PyObject *exc = PyErr_GetRaisedException();
-    PyObject *s = exc ? PyObject_Str(exc) : NULL;
-    NSString *msg = s ? [NSString stringWithUTF8String:PyUnicode_AsUTF8(s) ?: ""] : @"Unknown engine error.";
-    Py_XDECREF(s);
-    Py_XDECREF(exc);
-    return msg.length ? msg : @"Unknown engine error.";
+    NSString *msg = nil;
+    PyObject *tb = PyImport_ImportModule("traceback");
+    PyObject *lines = (tb && exc) ? PyObject_CallMethod(tb, "format_exception", "O", exc) : NULL;
+    if (lines) {
+        PyObject *empty = PyUnicode_FromString("");
+        PyObject *joined = empty ? PyUnicode_Join(empty, lines) : NULL;
+        if (joined) msg = [NSString stringWithUTF8String:PyUnicode_AsUTF8(joined) ?: ""];
+        Py_XDECREF(joined); Py_XDECREF(empty);
+    }
+    if (!msg.length && exc) {
+        PyObject *name = PyObject_GetAttrString((PyObject *)Py_TYPE(exc), "__name__");
+        PyObject *s = PyObject_Str(exc);
+        msg = [NSString stringWithFormat:@"%s: %s", name ? PyUnicode_AsUTF8(name) : "Error", s ? PyUnicode_AsUTF8(s) : ""];
+        Py_XDECREF(name); Py_XDECREF(s);
+    }
+    PyErr_Clear();
+    Py_XDECREF(lines); Py_XDECREF(tb); Py_XDECREF(exc);
+    msg = [msg stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return msg.length ? msg : @"Unknown engine error (no details).";
 }
 
 - (void)start {
@@ -169,6 +185,10 @@ static NSString *pyErrorString(void) {
     setenv("PYTHON_COLORS", "0", 1);
     setenv("PYTHONIOENCODING", "utf-8", 1);
     setenv("TMPDIR", NSTemporaryDirectory().fileSystemRepresentation, 1);
+    // Used by vgboot when Python can't read the iOS version itself (see _ctypes_guard).
+    setenv("VG_IOS_NAME", UIDevice.currentDevice.systemName.UTF8String ?: "iOS", 1);
+    setenv("VG_IOS_VERSION", UIDevice.currentDevice.systemVersion.UTF8String ?: "", 1);
+    setenv("VG_IOS_MODEL", UIDevice.currentDevice.model.UTF8String ?: "iPhone", 1);
 
     PyImport_AppendInittab("vgnative", &PyInit_vgnative);
 

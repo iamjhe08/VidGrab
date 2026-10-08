@@ -40,8 +40,9 @@ static NSString *const kOverlayJS = @""
 "    var bw = btn.offsetWidth || 110; var top = Math.max(10, r.top + 10);\n"
 "    var left = Math.min(innerWidth - bw - 10, r.right - bw - 10); st.top = top + 'px'; st.left = Math.max(10,left) + 'px'; }\n"
 "  else { st.display='none'; }\n"
-"  var s = (v?'v':'-') + (v && !v.paused ? 'p' : '') + location.href;\n"
-"  if (s !== lastState) { lastState = s; post({type:'state', hasVideo: !!v, playing: !!(v && !v.paused), page: location.href, title: document.title}); }\n"
+"  var vs = v ? (v.currentSrc || v.src || '') : '';\n"
+"  var s = (v?'v':'-') + (v && !v.paused ? 'p' : '') + location.href + '|' + vs;\n"
+"  if (s !== lastState) { lastState = s; post({type:'state', hasVideo: !!v, playing: !!(v && !v.paused), page: location.href, title: document.title, src: vs}); }\n"
 "}\n"
 "setInterval(tick, 350);\n"
 "addEventListener('scroll', tick, {passive:true}); addEventListener('resize', tick);\n"
@@ -62,6 +63,9 @@ static NSString *const kOverlayJS = @""
 @property (nonatomic, strong) VGProgressBar *fabBar;  // progress inside it
 @property (nonatomic, strong) UILabel *fabBadge;      // number of downloads when more than one
 @property (nonatomic) BOOL pageHasVideo;
+@property (nonatomic, copy) NSString *activeStream;    // the stream whose pieces the page fetched most recently (the one playing)
+@property (nonatomic, copy) NSString *playingSrc;      // the playing video element's own address, when it is a plain link
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *captured;   // video streams this page asked for while it played
 @end
 
 @implementation VGBrowserViewController
@@ -98,6 +102,7 @@ static NSString *const kOverlayJS = @""
     self.web.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.web];
     [VGCrash breadcrumb:@"browser opened"];
+    self.captured = [NSMutableArray array];
     [self installScripts];
     [[VGBlocker shared] prepare];
     [[VGBlocker shared] applyTo:self.web.configuration.userContentController host:nil];
@@ -228,6 +233,9 @@ static NSString *const kOverlayJS = @""
         if (poly.length) [ucc addUserScript:[[WKUserScript alloc] initWithSource:poly injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
     }
     [ucc addUserScript:[[WKUserScript alloc] initWithSource:kOverlayJS injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:NO]];
+    // Notes the streams a page asks for while it plays, for sites that only show their video once it plays.
+    NSString *sniff = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"sniffer" ofType:@"js"] encoding:NSUTF8StringEncoding error:nil];
+    if (sniff.length) [ucc addUserScript:[[WKUserScript alloc] initWithSource:sniff injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
     if ([VGBlocker shared].enabled && [VGBlocker shared].skipYouTubeAds) {
         [ucc addUserScript:[[WKUserScript alloc] initWithSource:[VGBlocker youTubeAdSkipScript]
                                                  injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES]];
@@ -789,7 +797,9 @@ static BOOL looksLikeVideoPage(NSURL *u) {
 - (void)refreshFab {
     BOOL downloading = [VGEngine shared].activeCount > 0;
     BOOL onSite = self.startPage.hidden && [self.web.URL.scheme hasPrefix:@"http"];
-    BOOL show = downloading || (onSite && (self.pageHasVideo || looksLikeVideoPage(self.web.URL)));
+    // The lower Download button is retired; the button on the video does the job.
+    BOOL show = NO;
+    (void)downloading; (void)onSite;
     self.fabBadge.hidden = !show || [VGEngine shared].activeCount < 2;
     if (show == !self.fab.hidden) return;
     if (show) {
@@ -806,7 +816,7 @@ static BOOL looksLikeVideoPage(NSURL *u) {
 - (void)fabTapped {
     BOOL onSite = self.startPage.hidden && self.web.URL;
     // On a video page the button always offers a new download; otherwise it shows your downloads.
-    if (onSite && (self.pageHasVideo || looksLikeVideoPage(self.web.URL))) {
+    if (onSite && (self.pageHasVideo || self.captured.count || looksLikeVideoPage(self.web.URL))) {
         [self showSheetFor:self.web.URL.absoluteString fallback:nil];
     } else if ([VGEngine shared].activeCount) {
         self.tabBarController.selectedIndex = 2;
@@ -818,6 +828,8 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     [[UIImpactFeedbackGenerator new] impactOccurred];
     NSString *fallback = ([src hasPrefix:@"http"]) ? src : nil;  // blob: links can't be downloaded directly
     VGQualitySheet *sheet = [[VGQualitySheet alloc] initWithURL:page fallbackURL:fallback];
+    sheet.candidates = [self candidateList];
+    sheet.fromBrowser = YES;
     [sheet presentFrom:self];
 }
 
@@ -892,6 +904,7 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     self.startPage.alpha = 0;
     [UIView animateWithDuration:0.2 animations:^{ self.startPage.alpha = 1; }];
     self.pageHasVideo = NO;
+    [self.captured removeAllObjects]; self.activeStream = nil; self.playingSrc = nil;
     self.address.text = @"";
     [self refreshFab];
     [self updateButtons];
@@ -934,7 +947,10 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     [self updateButtons];
 }
 
-- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation { [self updateButtons]; }
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    [self.captured removeAllObjects]; self.activeStream = nil; self.playingSrc = nil;   // a new page: what the last one played no longer applies
+    [self updateButtons];
+}
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { [self updateButtons]; [self updateAddress]; }
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error { [self updateButtons]; }
 
@@ -960,6 +976,58 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     decisionHandler(WKNavigationActionPolicyAllow);
 }
 
+#pragma mark Streams caught while the page plays
+
+/// A page asked for a video stream (playlist, manifest or whole file). Kept with the details the page's own player
+/// used, so the download can ask for it the same way: the page it came from (Referer) and the browser name.
+- (void)noteMedia:(NSDictionary *)m {
+    NSString *url = [m[@"url"] isKindOfClass:NSString.class] ? m[@"url"] : nil;
+    if (![url hasPrefix:@"http"]) return;
+    for (NSDictionary *c in self.captured) if ([c[@"url"] isEqualToString:url]) return;
+    NSString *kind = [m[@"kind"] isKindOfClass:NSString.class] ? m[@"kind"] : @"file";
+    NSString *frame = [m[@"frame"] isKindOfClass:NSString.class] ? m[@"frame"] : (self.web.URL.absoluteString ?: @"");
+    NSString *ua = [m[@"ua"] isKindOfClass:NSString.class] ? m[@"ua"] : @"";
+    NSURL *mediaURL = [NSURL URLWithString:url];
+    NSURL *frameURL = [NSURL URLWithString:frame];
+    NSMutableDictionary *headers = [NSMutableDictionary dictionary];
+    if (frame.length) headers[@"Referer"] = frame;
+    if (frameURL.scheme.length && frameURL.host.length) {
+        headers[@"Origin"] = [NSString stringWithFormat:@"%@://%@%@", frameURL.scheme, frameURL.host,
+                              frameURL.port ? [NSString stringWithFormat:@":%@", frameURL.port] : @""];
+    }
+    if (ua.length) headers[@"User-Agent"] = ua;
+    long long size = [m[@"size"] respondsToSelector:@selector(longLongValue)] ? [m[@"size"] longLongValue] : 0;
+    NSString *title = [m[@"title"] isKindOfClass:NSString.class] ? m[@"title"] : @"";
+    NSString *host = mediaURL.host ?: @"";
+    NSString *last = mediaURL.lastPathComponent.length > 1 ? mediaURL.lastPathComponent : @"";
+    NSString *what = [kind isEqualToString:@"hls"] ? @"Stream" : ([kind isEqualToString:@"dash"] ? @"Stream (DASH)" : @"Video file");
+    NSMutableString *label = [NSMutableString stringWithString:what];
+    if (size > 500000) [label appendFormat:@" · %@", [NSByteCountFormatter stringFromByteCount:size countStyle:NSByteCountFormatterCountStyleFile]];
+    [label appendFormat:@" · %@", last.length && last.length < 28 ? last : host];
+    [self.captured addObject:@{@"url": url, @"kind": kind, @"headers": headers, @"title": title, @"page": frame, @"label": label}];
+    while (self.captured.count > 12) [self.captured removeObjectAtIndex:0];
+    [VGCrash breadcrumb:[NSString stringWithFormat:@"caught %@ %@", kind, host]];
+    [self refreshFab];
+}
+
+/// What the sheet may try when the page link itself isn't understood: playlists first, then whole files,
+/// the newest of each first, at most six.
+- (NSArray<NSDictionary *> *)candidateList {
+    // The video that is playing comes first: the stream whose pieces the page is fetching, or the video element's own address.
+    // The rest follow, streams before plain files.
+    NSArray *sorted = [[self.captured reverseObjectEnumerator].allObjects sortedArrayWithOptions:NSSortStable usingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSInteger (^rank)(NSDictionary *) = ^NSInteger(NSDictionary *d) {
+            NSString *u = d[@"url"];
+            if (self.activeStream.length && [u isEqualToString:self.activeStream]) return -2;
+            if (self.playingSrc.length && [u isEqualToString:self.playingSrc]) return -1;
+            return [d[@"kind"] isEqualToString:@"hls"] ? 0 : ([d[@"kind"] isEqualToString:@"file"] ? 1 : 2);
+        };
+        NSInteger ra = rank(a), rb = rank(b);
+        return ra < rb ? NSOrderedAscending : (ra > rb ? NSOrderedDescending : NSOrderedSame);
+    }];
+    return sorted.count > 6 ? [sorted subarrayWithRange:NSMakeRange(0, 6)] : sorted;
+}
+
 #pragma mark Messages from the page
 
 - (void)userContentController:(WKUserContentController *)ucc didReceiveScriptMessage:(WKScriptMessage *)message {
@@ -968,9 +1036,16 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSString *type = m[@"type"];
     if ([type isEqualToString:@"state"]) {
         if (message.frameInfo.isMainFrame || [m[@"hasVideo"] boolValue]) {
+            NSString *src = [m[@"src"] isKindOfClass:NSString.class] ? m[@"src"] : @"";
+            if ([m[@"hasVideo"] boolValue] && [src hasPrefix:@"http"]) self.playingSrc = src;
             self.pageHasVideo = [m[@"hasVideo"] boolValue];
             [self refreshFab];
         }
+    } else if ([type isEqualToString:@"active"]) {
+        NSString *u = [m[@"url"] isKindOfClass:NSString.class] ? m[@"url"] : nil;
+        if ([u hasPrefix:@"http"]) self.activeStream = u;
+    } else if ([type isEqualToString:@"media"]) {
+        [self noteMedia:m];
     } else if ([type isEqualToString:@"download"]) {
         NSString *page = m[@"page"];
         // A video inside an embedded frame: prefer the frame's own page link if it is a known video site.

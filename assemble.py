@@ -104,7 +104,24 @@ def main():
     for name in sorted(os.listdir(fw)):
         binary = os.path.join(fw, name, name[:-len('.framework')])
         run(LDID, '-S', binary)
+    # Floating download bubble over other apps (TrollStore and jailbreak). Built from hud/.
+    hud_src = os.path.join(HERE, 'hud')
+    run('make', '-C', hud_src, 'FINALPACKAGE=1')
+    hud = os.path.join(APP, 'VidGrabHUD')
+    shutil.copy2(os.path.join(hud_src, '.theos', 'obj', 'VidGrabHUD'), hud)
+    os.chmod(hud, 0o755)
+    run(LDID, '-S' + os.path.join(hud_src, 'entitlements.plist'), hud)
+    # The app keeps no special permissions: on TrollStore, unsandboxing it turns the browser black,
+    # and iOS won't let a sandboxed app start the bubble helper. The bubble over other apps is
+    # for jailbreak installs, where the jailbreak starts it as a background service.
     run(LDID, '-S', os.path.join(APP, 'VidGrab'))
+
+    # Everything must be readable by the phone's normal user.
+    for r, ds, fs in os.walk(APP):
+        for n in ds + fs:
+            p = os.path.join(r, n)
+            if not os.path.islink(p):
+                os.chmod(p, os.stat(p).st_mode | 0o444 | (0o111 if os.path.isdir(p) else 0))
 
     # Zip
     if os.path.exists(OUT):

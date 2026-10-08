@@ -10,7 +10,7 @@
 
 #pragma mark - Home
 
-typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownloading, VGStepDone };
+typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownloading, VGStepDone, VGStepPlaylist };
 
 @interface VGHomeViewController () <UITextFieldDelegate, UICollectionViewDataSource, UICollectionViewDelegate>
 @property (nonatomic, strong) UIScrollView *scroll;
@@ -44,7 +44,36 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic, weak) VGTask *task;   // the download this screen is showing
 @property (nonatomic) NSInteger selected;
 @property (nonatomic) VGStep step;
+
+// Paste-free start
+@property (nonatomic, strong) UIView *clipBanner;
+@property (nonatomic, strong) UILabel *clipTitle;
+@property (nonatomic) BOOL fromClipboard;
+@property (nonatomic, strong) UIButton *notThisButton;
+
+// Playlists
+@property (nonatomic, strong) UIView *playlistSection;
+@property (nonatomic, strong) UILabel *playlistTitle, *playlistMeta;
+@property (nonatomic, strong) UIStackView *playlistRows;
+@property (nonatomic, strong) UIButton *playlistMore, *playlistAll, *playlistDownload;
+@property (nonatomic, strong) UISegmentedControl *modeControl;   // Download or Stream
+@property (nonatomic) BOOL opening;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *picked;
+@property (nonatomic) BOOL showAllRows;
+@property (nonatomic, copy) NSString *playlistQuality;
+@property (nonatomic, strong) NSArray<UIButton *> *playlistQualityButtons;
+
+// Home when nothing is going on
+@property (nonatomic, strong) UIView *activitySection;
+@property (nonatomic, strong) UIView *nowCard;
+@property (nonatomic, strong) UILabel *nowTitle, *nowPercent;
+@property (nonatomic, strong) VGProgressBar *nowBar;
+@property (nonatomic, strong) UIView *recentBlock;
+@property (nonatomic, strong) UIStackView *recentRow;
 @end
+
+static NSString *const kClipCount = @"vgClipboardCount";
+static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 @implementation VGHomeViewController
 
@@ -155,17 +184,28 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     [self buildLinkSection];
     [self buildChips];
     [self buildQuality];
+    [self buildPlaylist];
     [self buildProgress];
     [self buildDone];
+    [self buildActivity];
     [self setStep:VGStepWelcome animated:NO];
+
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserver:self selector:@selector(appActive) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [nc addObserver:self selector:@selector(appInactive) name:UIApplicationWillResignActiveNotification object:nil];
+    [nc addObserver:self selector:@selector(refreshActivity) name:VGTasksDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(refreshActivity) name:VGLibraryDidChangeNotification object:nil];
+    [self refreshActivity];
 }
+
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     NSString *report = [VGCrash previousReport];
-    if (!report) return;
+    if (!report) { [self checkClipboard]; return; }
     NSString *last = [VGCrash previousLastStep];
     [VGCrash clearPreviousReport];
     NSString *msg = @"Tap Copy details and send them to the developer so it can be fixed.";
@@ -202,9 +242,9 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     [hero addSubview:glow];
 
     UILabel *h1 = [self label:VGFont(38, UIFontWeightHeavy) color:VGText lines:0];
-    h1.text = @"Grab any\nvideo.";
+    h1.text = @"Copy a link.\nWe'll do the rest.";
     UILabel *sub = [self label:VGFont(16, UIFontWeightRegular) color:VGSecondary lines:0];
-    sub.text = @"Paste a link, pick the quality, and keep it on your iPhone.";
+    sub.text = @"Copy a video or playlist link in any app and come back. It shows up here, ready to download.";
     UIStackView *s = [self vstack:@[h1, sub] spacing:10];
     s.translatesAutoresizingMaskIntoConstraints = NO;
     [hero addSubview:s];
@@ -222,7 +262,18 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     [self.stack addArrangedSubview:hero];
 }
 
+- (void)buildClipBanner {
+    UILabel *tag = [self label:VGFont(12, UIFontWeightHeavy) color:VGHex(0xFF8FA6) lines:1];
+    tag.attributedText = [[NSAttributedString alloc] initWithString:@"FOUND ON YOUR CLIPBOARD" attributes:@{NSKernAttributeName: @1.4}];
+    self.clipTitle = [self label:VGFont(30, UIFontWeightHeavy) color:VGText lines:0];
+    self.clipTitle.text = @"Ready when you are.";
+    UIStackView *s = [self vstack:@[tag, self.clipTitle] spacing:4];
+    self.clipBanner = [self padded:s top:18 bottom:12];
+    [self.stack addArrangedSubview:self.clipBanner];
+}
+
 - (void)buildVideoHero {
+    [self buildClipBanner];
     UIView *hero = [UIView new];
     self.heroImage = [UIImageView new];
     self.heroImage.contentMode = UIViewContentModeScaleAspectFill;
@@ -418,7 +469,21 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     self.downloadCaption = [self label:VGFont(13, UIFontWeightMedium) color:VGTertiary lines:0];
     self.downloadCaption.textAlignment = NSTextAlignmentCenter;
 
-    UIView *bottom = [self padded:[self vstack:@[self.downloadButton, self.downloadCaption] spacing:10] top:18 bottom:0];
+    self.notThisButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.notThisButton setTitle:@"Not this one" forState:UIControlStateNormal];
+    self.notThisButton.titleLabel.font = VGFont(15, UIFontWeightSemibold);
+    self.notThisButton.tintColor = VGSecondary;
+    [self.notThisButton.heightAnchor constraintEqualToConstant:44].active = YES;
+    [self.notThisButton addTarget:self action:@selector(notThisOne) forControlEvents:UIControlEventTouchUpInside];
+    self.modeControl = [[UISegmentedControl alloc] initWithItems:@[@"Download", @"Stream"]];
+    self.modeControl.selectedSegmentIndex = [NSUserDefaults.standardUserDefaults boolForKey:@"vgStreamMode"] ? 1 : 0;
+    self.modeControl.selectedSegmentTintColor = VGAccent;
+    self.modeControl.backgroundColor = VGSurface2;
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGSecondary, NSFontAttributeName: VGFont(15, UIFontWeightSemibold)} forState:UIControlStateNormal];
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.whiteColor, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
+    [self.modeControl.heightAnchor constraintEqualToConstant:40].active = YES;
+    [self.modeControl addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
+    UIView *bottom = [self padded:[self vstack:@[self.modeControl, self.downloadButton, self.downloadCaption, self.notThisButton] spacing:10] top:18 bottom:0];
     self.qualitySection = [self vstack:@[[self padded:h top:16 bottom:12], self.qualityList, bottom] spacing:0];
     [self.stack addArrangedSubview:self.qualitySection];
 }
@@ -532,8 +597,12 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     void (^apply)(void) = ^{
         self.welcomeHero.hidden = step != VGStepWelcome;
         self.chipsSection.hidden = step != VGStepWelcome;
-        self.videoHero.hidden = step == VGStepWelcome;
+        self.activitySection.hidden = step != VGStepWelcome;
+        self.clipBanner.hidden = !(self.fromClipboard && (step == VGStepLoaded || step == VGStepPlaylist));
+        self.videoHero.hidden = step == VGStepWelcome || step == VGStepPlaylist;
         self.qualitySection.hidden = step != VGStepLoaded;
+        self.playlistSection.hidden = step != VGStepPlaylist;
+        self.notThisButton.hidden = !self.fromClipboard;
         self.progressSection.hidden = step != VGStepDownloading;
         self.doneSection.hidden = step != VGStepDone;
         for (UIView *v in self.stack.arrangedSubviews) v.alpha = v.hidden ? 0 : 1;
@@ -556,6 +625,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 #pragma mark Actions
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    self.fromClipboard = NO;
     [self find];
     return YES;
 }
@@ -569,6 +639,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 }
 
 - (void)paste {
+    self.fromClipboard = NO;
     UIPasteboard *pb = UIPasteboard.generalPasteboard;
     NSString *s = pb.URL.absoluteString ?: pb.string;
     if (!s.length) { [VGActions alert:@"Nothing to paste" message:@"Copy a video link first, then tap Paste." from:self]; return; }
@@ -595,8 +666,18 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
         if (lookup != self.lookupID) return;  // cleared while looking up
         [self setFinding:NO];
         if (video) self.task = nil;
-        if (!video) { [self showError:@"Couldn't find a video" message:error]; return; }
+        if (!video) {
+            if (self.fromClipboard) { self.fromClipboard = NO; [self clearAll]; return; }   // not a video link: stay quiet
+            [self showError:@"Couldn't find a video" message:error];
+            return;
+        }
         self.video = video;
+        if (video.isPlaylist) {
+            [self fillPlaylist];
+            [self setStep:VGStepPlaylist animated:YES];
+            [self.scroll setContentOffset:CGPointZero animated:YES];
+            return;
+        }
         [self fillVideo];
         [self setStep:VGStepLoaded animated:YES];
         [self.scroll setContentOffset:CGPointZero animated:YES];
@@ -637,9 +718,35 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     [self updateCaption];
 }
 
+- (BOOL)streamMode { return self.modeControl.selectedSegmentIndex == 1; }
+
+- (void)modeChanged {
+    [NSUserDefaults.standardUserDefaults setBool:[self streamMode] forKey:@"vgStreamMode"];
+    [self updateCaption];
+}
+
+- (void)setPrimaryTitle:(NSString *)title icon:(NSString *)icon {
+    UIButtonConfiguration *c = self.downloadButton.configuration;
+    if (c) {
+        c.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName: VGFont(16, UIFontWeightBold)}];
+        c.image = [UIImage systemImageNamed:icon withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightBold]];
+        self.downloadButton.configuration = c;
+    } else {
+        [self.downloadButton setTitle:title forState:UIControlStateNormal];
+        [self.downloadButton setImage:[UIImage systemImageNamed:icon] forState:UIControlStateNormal];
+    }
+}
+
 - (void)updateCaption {
     VGOption *o = self.video.options.count > (NSUInteger)self.selected ? self.video.options[self.selected] : nil;
     if (!o) { self.downloadCaption.text = @""; return; }
+    if ([self streamMode]) {
+        [self setPrimaryTitle:(self.opening ? @"Opening…" : @"Stream") icon:@"play.fill"];
+        self.downloadCaption.text = o.audio ? @"Plays now in VidGrab's player. Nothing is saved unless you tap the download button there"
+                                            : @"Plays now in VidGrab's player. Tap the download button in the player to keep it";
+        return;
+    }
+    [self setPrimaryTitle:@"Download" icon:@"arrow.down.to.line"];
     if ([o.identifier isEqualToString:@"mp3"]) self.downloadCaption.text = @"MP3 at 256 kbps · plays anywhere. Share it or save to Files";
     else if (o.audio) self.downloadCaption.text = @"M4A audio · Share it or save to Files";
     else if (o.convert) self.downloadCaption.text = @"Converted to MP4 on your iPhone so Photos can play it. Takes a few minutes; keep the app open.";
@@ -647,7 +754,39 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     else self.downloadCaption.text = [NSString stringWithFormat:@"%@ · The Photos app can't open this one, but Files and other apps can", o.format];
 }
 
+- (void)stream {
+    if (!self.video || self.opening || (NSUInteger)self.selected >= self.video.options.count) return;
+    // No quality is asked for here: the player opens fast on its own pick and the viewer changes quality inside it.
+    VGOption *picked = self.video.options[self.selected];
+    VGOption *opt = picked.audio ? picked : nil;
+    VGVideo *video = self.video;
+    NSUInteger token = self.lookupID;
+    self.opening = YES;
+    self.downloadButton.enabled = NO;
+    [self updateCaption];
+    __weak typeof(self) ws = self;
+    void (^done)(void) = ^{ ws.opening = NO; ws.downloadButton.enabled = YES; [ws updateCaption]; };
+    [[VGEngine shared] streamLinkFor:video option:opt completion:^(NSDictionary *info, NSString *error) {
+        if (!ws) return;
+        if (ws.lookupID != token) return;   // cleared while opening
+        if (!info) { done(); [ws showError:@"Couldn't stream this video" message:error ?: @"Try Download instead."]; return; }
+        [VGPlayerViewController prepareStream:info completion:^(AVPlayerItem *item, NSString *err) {
+            if (!ws) return;
+            if (ws.lookupID != token) return;   // cleared while opening
+            done();
+            if (!item) { [ws showError:@"Couldn't stream this video" message:err ?: @"Try Download instead."]; return; }
+            VGPlayerViewController *p = [VGPlayerViewController playerForStreamItem:item video:video option:opt audio:[info[@"audio"] boolValue]];
+            p.streamMaster = [info[@"master"] boolValue];
+            p.streamVariants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
+            UIViewController *top = ws;
+            while (top.presentedViewController) top = top.presentedViewController;
+            [top presentViewController:p animated:YES completion:^{ [p start]; }];
+        }];
+    }];
+}
+
 - (void)download {
+    if ([self streamMode]) { [self stream]; return; }
     if (!self.video || (NSUInteger)self.selected >= self.video.options.count) return;
     VGOption *opt = self.video.options[self.selected];
     self.bar.progress = 0;
@@ -706,15 +845,19 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 /// Clears the link and the shown video, back to the start.
 - (void)clearAll {
     self.lookupID++;
+    self.opening = NO;
+    self.downloadButton.enabled = YES;
     self.task = nil;   // any download keeps running; it's still shown in Downloads
     [self setFinding:NO];
     self.video = nil;
     self.item = nil;
     self.field.text = @"";
     self.heroImage.image = nil;
+    self.fromClipboard = NO;
     [self setStep:VGStepWelcome animated:YES];
     [self.scroll setContentOffset:CGPointZero animated:YES];
     [self updateClear];
+    [self refreshActivity];
 }
 
 - (void)reset {
@@ -735,6 +878,371 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
     [[VGEngine shared] updateEngine:^(NSString *title, NSString *message) {
         [wait dismissViewControllerAnimated:YES completion:^{ [VGActions alert:title message:message from:self]; }];
     }];
+}
+
+
+#pragma mark Paste-free start
+
+- (void)appInactive {
+    // Remember the clipboard as it is now, so a link copied inside VidGrab isn't offered back.
+    [NSUserDefaults.standardUserDefaults setInteger:UIPasteboard.generalPasteboard.changeCount forKey:kClipCount];
+}
+
+- (void)appActive {
+    [self refreshActivity];
+    [self checkClipboard];
+}
+
++ (BOOL)clipboardEnabled {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return [d objectForKey:@"vgClipboardCheck"] ? [d boolForKey:@"vgClipboardCheck"] : YES;
+}
+
+/// When VidGrab opens (or comes back) with a new link on the clipboard, look it up right away,
+/// whatever Home was showing before. The tab switches to Home if needed.
+- (void)checkClipboard {
+    if (![VGHomeViewController clipboardEnabled] || !self.isViewLoaded) return;
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    if (self.tabBarController.presentedViewController || self.presentedViewController) return;   // Settings or a sheet is open
+    if (self.field.isFirstResponder || !self.findButton.userInteractionEnabled) return;            // typing, or already looking up
+    UIPasteboard *pb = UIPasteboard.generalPasteboard;
+    NSInteger count = pb.changeCount;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if ([d objectForKey:kClipCount] && [d integerForKey:kClipCount] == count) return;
+    [d setInteger:count forKey:kClipCount];
+    if (!pb.hasURLs && !pb.hasStrings) return;
+    // Checks for a web link without reading the clipboard, so no paste prompt for other text.
+    [pb detectPatternsForPatterns:[NSSet setWithObject:UIPasteboardDetectionPatternProbableWebURL]
+                completionHandler:^(NSSet<UIPasteboardDetectionPattern> *found, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![found containsObject:UIPasteboardDetectionPatternProbableWebURL]) return;
+            NSString *text = pb.URL.absoluteString ?: pb.string;
+            NSString *link = text ? [self extractLink:text] : nil;
+            if (![link hasPrefix:@"http"] || [link isEqualToString:[d stringForKey:kClipDismissed]]) return;
+            if ([link isEqualToString:self.video.url] || [link isEqualToString:self.field.text]) return;   // already showing it
+            if (self.tabBarController && self.tabBarController.selectedViewController != self.navigationController)
+                self.tabBarController.selectedViewController = self.navigationController;
+            [self.navigationController popToRootViewControllerAnimated:NO];
+            if (self.step != VGStepWelcome) [self clearAll];
+            self.fromClipboard = YES;
+            self.field.text = link;
+            [self find];
+        });
+    }];
+}
+
+- (void)notThisOne {
+    if (self.video.url) [NSUserDefaults.standardUserDefaults setObject:self.video.url forKey:kClipDismissed];
+    [self clearAll];
+}
+
+#pragma mark Playlists
+
+- (UIButton *)pill:(NSString *)title {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    [b setTitle:title forState:UIControlStateNormal];
+    b.titleLabel.font = VGFont(14, UIFontWeightBold);
+    b.layer.cornerRadius = 12;
+    b.layer.cornerCurve = kCACornerCurveContinuous;
+    [b.heightAnchor constraintEqualToConstant:44].active = YES;
+    return b;
+}
+
+- (void)stylePill:(UIButton *)b on:(BOOL)on {
+    b.backgroundColor = on ? [VGAccent colorWithAlphaComponent:0.14] : VGSurface2;
+    b.layer.borderColor = (on ? VGAccent : VGStroke).CGColor;
+    b.layer.borderWidth = on ? 2 : 1;
+    [b setTitleColor:VGText forState:UIControlStateNormal];
+    b.accessibilityTraits = on ? (UIAccessibilityTraitButton | UIAccessibilityTraitSelected) : UIAccessibilityTraitButton;
+}
+
+- (void)buildPlaylist {
+    UILabel *tag = [self label:VGFont(11, UIFontWeightHeavy) color:VGText lines:1];
+    tag.attributedText = [[NSAttributedString alloc] initWithString:@"PLAYLIST" attributes:@{NSKernAttributeName: @1.0}];
+    self.playlistTitle = [self label:VGFont(19, UIFontWeightHeavy) color:VGText lines:2];
+    self.playlistMeta = [self label:VGFont(14, UIFontWeightMedium) color:VGSecondary lines:1];
+
+    self.playlistAll = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.playlistAll.titleLabel.font = VGFont(14, UIFontWeightBold);
+    self.playlistAll.tintColor = VGHex(0xFF8FA6);
+    [self.playlistAll addTarget:self action:@selector(toggleAllPicked) forControlEvents:UIControlEventTouchUpInside];
+    UIView *spacer = [UIView new];
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[self.playlistMeta, spacer, self.playlistAll]];
+    head.alignment = UIStackViewAlignmentCenter;
+
+    self.playlistRows = [self vstack:@[] spacing:2];
+    self.playlistMore = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.playlistMore.titleLabel.font = VGFont(14, UIFontWeightBold);
+    self.playlistMore.tintColor = VGHex(0xFF8FA6);
+    [self.playlistMore.heightAnchor constraintEqualToConstant:44].active = YES;
+    [self.playlistMore addTarget:self action:@selector(showAllPlaylistRows) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *listInner = [self vstack:@[self.playlistRows, self.playlistMore] spacing:0];
+    UIView *list = [UIView new];
+    list.backgroundColor = VGHex(0x0F0F14);
+    list.layer.cornerRadius = 14;
+    listInner.translatesAutoresizingMaskIntoConstraints = NO;
+    [list addSubview:listInner];
+    [NSLayoutConstraint activateConstraints:@[
+        [listInner.topAnchor constraintEqualToAnchor:list.topAnchor constant:6],
+        [listInner.bottomAnchor constraintEqualToAnchor:list.bottomAnchor constant:-2],
+        [listInner.leadingAnchor constraintEqualToAnchor:list.leadingAnchor constant:6],
+        [listInner.trailingAnchor constraintEqualToAnchor:list.trailingAnchor constant:-6],
+    ]];
+
+    NSMutableArray *qs = [NSMutableArray array];
+    NSArray *names = @[@"Best", @"1080p", @"720p", @"480p", @"MP3"];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        UIButton *b = [self pill:names[i]];
+        b.tag = (NSInteger)i;
+        [b addTarget:self action:@selector(pickPlaylistQuality:) forControlEvents:UIControlEventTouchUpInside];
+        [qs addObject:b];
+    }
+    self.playlistQualityButtons = qs;
+    UIStackView *qrow = [[UIStackView alloc] initWithArrangedSubviews:qs];
+    qrow.spacing = 6;
+    qrow.distribution = UIStackViewDistributionFillEqually;
+
+    self.playlistDownload = VGPrimaryButton(@"Download", @"arrow.down.circle.fill");
+    [self.playlistDownload addTarget:self action:@selector(downloadPlaylist) forControlEvents:UIControlEventTouchUpInside];
+    UILabel *note = [self label:VGFont(12, UIFontWeightMedium) color:VGTertiary lines:0];
+    note.text = @"Each video downloads in the chosen quality, or the closest one it has. They show up in Downloads.";
+
+    UIStackView *s = [self vstack:@[tag, self.playlistTitle, head, list, qrow, self.playlistDownload, note] spacing:12];
+    [s setCustomSpacing:4 afterView:tag];
+    [s setCustomSpacing:6 afterView:self.playlistTitle];
+    UIView *card = [self card:s];
+    card.layer.cornerRadius = 22;
+    self.playlistSection = [self padded:card top:6 bottom:10];
+    [self.stack addArrangedSubview:self.playlistSection];
+    self.playlistQuality = @"1080";
+}
+
+- (void)fillPlaylist {
+    VGVideo *p = self.video;
+    self.playlistTitle.text = p.title;
+    self.picked = [NSMutableArray array];
+    for (NSUInteger i = 0; i < p.entries.count; i++) [self.picked addObject:@YES];
+    self.showAllRows = NO;
+    [self rebuildPlaylistRows];
+    [self pickPlaylistQuality:self.playlistQualityButtons[1]];
+}
+
+- (void)rebuildPlaylistRows {
+    for (UIView *v in self.playlistRows.arrangedSubviews) [v removeFromSuperview];
+    NSArray<VGVideo *> *entries = self.video.entries;
+    NSUInteger shown = self.showAllRows ? entries.count : MIN(entries.count, 5);
+    for (NSUInteger i = 0; i < shown; i++) {
+        VGVideo *e = entries[i];
+        BOOL on = [self.picked[i] boolValue];
+        UIButton *row = [UIButton buttonWithType:UIButtonTypeCustom];
+        row.tag = (NSInteger)i;
+        [row addTarget:self action:@selector(togglePicked:) forControlEvents:UIControlEventTouchUpInside];
+        UIImageView *check = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:on ? @"checkmark.circle.fill" : @"circle"]];
+        check.tintColor = on ? VGAccent : VGTertiary;
+        [check.widthAnchor constraintEqualToConstant:24].active = YES;
+        UILabel *t = [self label:VGFont(14, UIFontWeightMedium) color:on ? VGText : VGSecondary lines:2];
+        t.text = [NSString stringWithFormat:@"%lu. %@", (unsigned long)i + 1, e.title];
+        UILabel *d = [self label:VGFont(12, UIFontWeightMedium) color:VGTertiary lines:1];
+        d.text = VGDuration(e.duration) ?: @"";
+        [d setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        UIStackView *h = [[UIStackView alloc] initWithArrangedSubviews:@[check, t, d]];
+        h.spacing = 10;
+        h.alignment = UIStackViewAlignmentCenter;
+        h.userInteractionEnabled = NO;
+        h.translatesAutoresizingMaskIntoConstraints = NO;
+        [row addSubview:h];
+        [NSLayoutConstraint activateConstraints:@[
+            [h.topAnchor constraintEqualToAnchor:row.topAnchor constant:8],
+            [h.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-8],
+            [h.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:8],
+            [h.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-8],
+            [row.heightAnchor constraintGreaterThanOrEqualToConstant:46],
+        ]];
+        row.accessibilityLabel = e.title;
+        row.accessibilityTraits = on ? (UIAccessibilityTraitButton | UIAccessibilityTraitSelected) : UIAccessibilityTraitButton;
+        [self.playlistRows addArrangedSubview:row];
+    }
+    self.playlistMore.hidden = shown >= entries.count;
+    [self.playlistMore setTitle:[NSString stringWithFormat:@"Show all %lu", (unsigned long)entries.count] forState:UIControlStateNormal];
+    [self updatePlaylistSummary];
+}
+
+- (NSUInteger)pickedCount {
+    NSUInteger n = 0;
+    for (NSNumber *x in self.picked) if (x.boolValue) n++;
+    return n;
+}
+
+- (void)updatePlaylistSummary {
+    NSUInteger total = self.video.entries.count, n = [self pickedCount];
+    NSMutableArray *bits = [NSMutableArray arrayWithObject:[NSString stringWithFormat:@"%lu videos", (unsigned long)total]];
+    if (VGDuration(self.video.duration)) [bits addObject:VGDuration(self.video.duration)];
+    self.playlistMeta.text = [bits componentsJoinedByString:@" · "];
+    [self.playlistAll setTitle:n == total ? @"Select none" : @"Select all" forState:UIControlStateNormal];
+    UIButtonConfiguration *c = self.playlistDownload.configuration;
+    NSString *title = n == 1 ? @"Download 1 video" : [NSString stringWithFormat:@"Download %lu videos", (unsigned long)n];
+    if (c) {
+        c.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName: VGFont(17, UIFontWeightBold)}];
+        self.playlistDownload.configuration = c;
+    } else {
+        [self.playlistDownload setTitle:title forState:UIControlStateNormal];
+    }
+    self.playlistDownload.enabled = n > 0;
+    self.playlistDownload.alpha = n > 0 ? 1 : 0.4;
+}
+
+- (void)togglePicked:(UIButton *)row {
+    NSUInteger i = (NSUInteger)row.tag;
+    if (i >= self.picked.count) return;
+    self.picked[i] = @(![self.picked[i] boolValue]);
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+    [self rebuildPlaylistRows];
+}
+
+- (void)toggleAllPicked {
+    BOOL all = [self pickedCount] == self.picked.count;
+    for (NSUInteger i = 0; i < self.picked.count; i++) self.picked[i] = @(!all);
+    [self rebuildPlaylistRows];
+}
+
+- (void)showAllPlaylistRows {
+    self.showAllRows = YES;
+    [self rebuildPlaylistRows];
+}
+
+- (void)pickPlaylistQuality:(UIButton *)b {
+    self.playlistQuality = @[@"best", @"1080", @"720", @"480", @"mp3"][(NSUInteger)b.tag];
+    for (UIButton *x in self.playlistQualityButtons) [self stylePill:x on:x == b];
+}
+
+- (void)downloadPlaylist {
+    NSArray<VGVideo *> *entries = self.video.entries;
+    VGOption *opt = [VGEngine presetOption:self.playlistQuality ?: @"best"];
+    NSUInteger n = 0;
+    for (NSUInteger i = 0; i < entries.count && i < self.picked.count; i++) {
+        if (![self.picked[i] boolValue]) continue;
+        [[VGEngine shared] download:entries[i] option:opt progress:nil completion:nil];
+        n++;
+    }
+    if (!n) return;
+    [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+    [VGActions toast:[NSString stringWithFormat:@"%lu videos added to Downloads", (unsigned long)n] icon:@"arrow.down.circle.fill" in:self.view.window ?: self.view];
+    [self clearAll];
+}
+
+#pragma mark Home activity
+
+- (void)buildActivity {
+    // Downloading now
+    self.nowTitle = [self label:VGFont(14, UIFontWeightBold) color:VGText lines:1];
+    self.nowPercent = [self label:VGFont(15, UIFontWeightHeavy) color:VGText lines:1];
+    [self.nowPercent setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    self.nowBar = [VGProgressBar new];
+    [self.nowBar.heightAnchor constraintEqualToConstant:6].active = YES;
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
+    icon.tintColor = VGAccent;
+    [icon.widthAnchor constraintEqualToConstant:28].active = YES;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    UIStackView *texts = [self vstack:@[self.nowTitle, self.nowBar] spacing:8];
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, texts, self.nowPercent]];
+    row.spacing = 12;
+    row.alignment = UIStackViewAlignmentCenter;
+    self.nowCard = [self card:row];
+    self.nowCard.layer.cornerRadius = 18;
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openDownloads)];
+    [self.nowCard addGestureRecognizer:tap];
+    self.nowCard.isAccessibilityElement = YES;
+    self.nowCard.accessibilityTraits = UIAccessibilityTraitButton;
+
+    // Recently saved
+    UILabel *h = [self label:VGFont(18, UIFontWeightBold) color:VGText lines:1];
+    h.text = @"Recently saved";
+    UIButton *all = [UIButton buttonWithType:UIButtonTypeSystem];
+    [all setTitle:@"See all" forState:UIControlStateNormal];
+    all.titleLabel.font = VGFont(14, UIFontWeightBold);
+    all.tintColor = VGHex(0xFF8FA6);
+    [all addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
+    UIView *sp = [UIView new];
+    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[h, sp, all]];
+    head.alignment = UIStackViewAlignmentCenter;
+    self.recentRow = [UIStackView new];
+    self.recentRow.spacing = 12;
+    self.recentRow.distribution = UIStackViewDistributionFillEqually;
+    self.recentBlock = [self vstack:@[head, self.recentRow] spacing:10];
+
+    UIStackView *s = [self vstack:@[self.nowCard, self.recentBlock] spacing:22];
+    self.activitySection = [self padded:s top:14 bottom:6];
+    // Put it right after the link box, before the "works with" chips.
+    NSUInteger at = [self.stack.arrangedSubviews indexOfObject:self.chipsSection];
+    if (at == NSNotFound) [self.stack addArrangedSubview:self.activitySection];
+    else [self.stack insertArrangedSubview:self.activitySection atIndex:at];
+}
+
+- (void)openDownloads {
+    UITabBarController *tabs = self.tabBarController;
+    if (tabs.viewControllers.count) tabs.selectedIndex = tabs.viewControllers.count - 1;
+}
+
+- (void)refreshActivity {
+    if (!self.activitySection) return;
+    VGTask *t = [VGEngine shared].leadTask;
+    self.nowCard.hidden = t == nil;
+    if (t) {
+        NSUInteger n = [VGEngine shared].activeCount;
+        self.nowTitle.text = n > 1 ? [NSString stringWithFormat:@"%@ (+%lu more)", t.video.title ?: @"Downloading", (unsigned long)n - 1] : (t.video.title ?: @"Downloading");
+        self.nowPercent.text = [NSString stringWithFormat:@"%d%%", (int)round(t.fraction * 100)];
+        self.nowBar.progress = t.fraction;
+        self.nowCard.accessibilityLabel = [NSString stringWithFormat:@"Downloading %@, %@", self.nowTitle.text, self.nowPercent.text];
+    }
+    NSMutableArray<VGItem *> *recent = [NSMutableArray array];
+    for (VGItem *i in [VGEngine shared].items) {
+        if (i.vault) continue;
+        [recent addObject:i];
+        if (recent.count == 2) break;
+    }
+    // Only rebuild the thumbnails when the list changed.
+    NSString *key = [[recent valueForKey:@"fileName"] componentsJoinedByString:@"|"];
+    if (![key isEqualToString:self.recentRow.accessibilityIdentifier]) {
+        self.recentRow.accessibilityIdentifier = key;
+        for (UIView *v in self.recentRow.arrangedSubviews) [v removeFromSuperview];
+        for (VGItem *i in recent) [self.recentRow addArrangedSubview:[self recentCard:i]];
+        if (recent.count == 1) [self.recentRow addArrangedSubview:[UIView new]];
+    }
+    self.recentBlock.hidden = recent.count == 0;
+}
+
+- (UIView *)recentCard:(VGItem *)item {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    UIImageView *img = [[UIImageView alloc] initWithImage:item.thumbnailImage];
+    img.contentMode = UIViewContentModeScaleAspectFill;
+    img.clipsToBounds = YES;
+    img.backgroundColor = VGSurface2;
+    img.layer.cornerRadius = 14;
+    img.layer.cornerCurve = kCACornerCurveContinuous;
+    [img.heightAnchor constraintEqualToConstant:100].active = YES;
+    UILabel *badge = [self label:VGFont(11, UIFontWeightHeavy) color:VGText lines:1];
+    badge.text = [NSString stringWithFormat:@" %@ ", item.res.length ? item.res : (item.audio ? @"Audio" : @"Video")];
+    badge.backgroundColor = [VGBackground colorWithAlphaComponent:0.75];
+    badge.layer.cornerRadius = 6;
+    badge.clipsToBounds = YES;
+    badge.translatesAutoresizingMaskIntoConstraints = NO;
+    [img addSubview:badge];
+    UILabel *t = [self label:VGFont(13, UIFontWeightBold) color:VGText lines:2];
+    t.text = item.title;
+    UIStackView *s = [self vstack:@[img, t] spacing:6];
+    s.userInteractionEnabled = NO;
+    s.translatesAutoresizingMaskIntoConstraints = NO;
+    [b addSubview:s];
+    [NSLayoutConstraint activateConstraints:@[
+        [s.topAnchor constraintEqualToAnchor:b.topAnchor], [s.bottomAnchor constraintEqualToAnchor:b.bottomAnchor],
+        [s.leadingAnchor constraintEqualToAnchor:b.leadingAnchor], [s.trailingAnchor constraintEqualToAnchor:b.trailingAnchor],
+        [badge.trailingAnchor constraintEqualToAnchor:img.trailingAnchor constant:-8],
+        [badge.bottomAnchor constraintEqualToAnchor:img.bottomAnchor constant:-8],
+    ]];
+    b.accessibilityLabel = [@"Play " stringByAppendingString:item.title ?: @"video"];
+    __weak typeof(self) ws = self;
+    [b addAction:[UIAction actionWithHandler:^(UIAction *a) { [VGActions play:item from:ws]; }] forControlEvents:UIControlEventTouchUpInside];
+    return b;
 }
 
 #pragma mark Collection

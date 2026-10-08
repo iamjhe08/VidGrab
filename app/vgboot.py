@@ -1,4 +1,30 @@
 """Startup and engine updates. Must not import yt_dlp at module level."""
+import os
+import sys
+
+
+def _ctypes_guard():
+    """Some jailbreaks (seen on iOS 15) can't start Python's ctypes part: importing it raises
+    MemoryError and takes the whole engine down. Python only needs it to read the iOS version,
+    so answer that ourselves and make ctypes a normal "not available" for everything else."""
+    if sys.platform != 'ios':
+        return
+    try:
+        import _ctypes  # noqa: F401  (works on most phones; then nothing changes)
+        return
+    except BaseException:
+        pass
+    import types
+    sys.modules['ctypes'] = None      # later "import ctypes" -> ImportError, which yt-dlp handles
+    sys.modules['_ctypes'] = None
+    m = types.ModuleType('_ios_support')
+    m.get_platform_ios = lambda: (os.environ.get('VG_IOS_NAME') or 'iOS', os.environ.get('VG_IOS_VERSION') or '',
+                                  os.environ.get('VG_IOS_MODEL') or 'iPhone', False)
+    sys.modules['_ios_support'] = m
+
+
+_ctypes_guard()
+
 import json
 import os
 import re

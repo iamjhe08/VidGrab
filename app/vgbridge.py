@@ -5,6 +5,7 @@ and gets JSON strings back. Progress, cancel and JavaScript are provided by the
 native module `vgnative`, which the app registers before Python starts.
 """
 import copy
+import hashlib
 import json
 import math
 import os
@@ -358,6 +359,142 @@ def _options(info):
     return opts
 
 
+def _pick_option(info, want):
+    """Turns a playlist-wide choice ('best', 'mp3', or a height like '1080') into this video's option."""
+    opts = _options(info)
+    ids = [o['id'] for o in opts]
+    if want == 'mp3':
+        return 'mp3' if 'mp3' in ids else ('audio' if 'audio' in ids else (ids[0] if ids else 'best'))
+    videos = [o for o in opts if not o['audio']]
+    if not videos:
+        return ids[0] if ids else 'best'
+    if want == 'best':
+        return videos[0]['id']
+    try:
+        limit = int(want)
+    except ValueError:
+        return videos[0]['id']
+    for o in videos:                       # sorted from highest to lowest
+        if o['id'].startswith('h:') and int(o['id'][2:]) <= limit:
+            return o['id']
+    return videos[-1]['id']
+
+
+# --------------------------------------------------------------------------
+# Links the in-app browser caught while a page was playing (or direct media links).
+# The app sends the page's own request details (Referer, cookies, browser name) as a JSON
+# string called "extra", so the site hands over the stream the same way it does to the player.
+# --------------------------------------------------------------------------
+def _extra(extra_json):
+    try:
+        d = json.loads(extra_json) if extra_json else {}
+    except (TypeError, ValueError):
+        d = {}
+    return d if isinstance(d, dict) else {}
+
+
+def _apply_extra(params, extra):
+    h = extra.get('headers')
+    if isinstance(h, dict) and h:
+        params['http_headers'] = {str(k): str(v) for k, v in h.items() if v}
+
+
+def _sniff(ydl, url, headers):
+    """Looks at the first bytes of a link. Returns (kind, ext): kind is 'hls', 'dash' or 'file', or None."""
+    from yt_dlp.networking import Request
+    h = {str(k): str(v) for k, v in (headers or {}).items()}
+    h['Range'] = 'bytes=0-4095'
+    resp = ydl.urlopen(Request(url, headers=h))
+    try:
+        head = resp.read(4096)
+        ct = (resp.headers.get('Content-Type') or '').lower()
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    if head.startswith(b'#EXTM3U') or 'mpegurl' in ct:
+        return 'hls', 'mp4'
+    if b'<MPD' in head[:1024] or 'dash+xml' in ct:
+        return 'dash', 'mp4'
+    if len(head) > 189 and head[0:1] == b'G' and head[188:189] == b'G':
+        return 'file', 'ts'
+    if head[4:8] == b'ftyp':
+        return 'file', 'mp4'
+    if head[:4] == b'\x1a\x45\xdf\xa3':
+        return 'file', 'webm' if b'webm' in head[:64] else 'mkv'
+    if head[:3] == b'FLV':
+        return 'file', 'flv'
+    if ct.startswith('video/'):
+        return 'file', 'mp4'
+    return None, None
+
+
+def _direct_info(ydl, url, extra):
+    """Builds the video information for a stream link yt-dlp has no extractor for, using the
+    request details the browser saw. HLS playlists and DASH manifests are read for their qualities."""
+    headers = dict(extra.get('headers') or {})
+    kind = extra.get('kind') or None
+    ext = 'mp4'
+    if kind in (None, 'file'):
+        k, e = _sniff(ydl, url, headers)
+        if k:
+            kind, ext = k, e
+        elif kind is None:
+            return None
+    kind = kind or 'file'
+    vid = hashlib.md5(url.encode('utf-8')).hexdigest()[:12]
+    ie = ydl.get_info_extractor('Generic')
+    if kind == 'hls':
+        formats = ie._extract_m3u8_formats(url, vid, 'mp4', m3u8_id='hls', headers=headers, fatal=True)
+    elif kind == 'dash':
+        formats = ie._extract_mpd_formats(url, vid, mpd_id='dash', headers=headers, fatal=True)
+    else:
+        formats = [{'url': url, 'format_id': 'file', 'ext': ext, 'protocol': 'https' if url.startswith('https') else 'http'}]
+    if not formats:
+        return None
+    for f in formats:
+        if headers:
+            f.setdefault('http_headers', dict(headers))
+    title = (extra.get('title') or '').strip()
+    if not title:
+        m = re.match(r'https?://([^/]+)', url)
+        title = m.group(1) if m else 'Video'
+    return {
+        'id': vid,
+        'title': title,
+        'formats': formats,
+        'http_headers': headers,
+        'extractor': 'direct',
+        'extractor_key': 'Direct',
+        'webpage_url': extra.get('page') or url,
+    }
+
+
+def _extract(ydl, url, extra):
+    """Normal lookup. Links the browser caught play-first go straight to the direct route; a link
+    yt-dlp doesn't recognise gets one more chance by looking at what the address really serves."""
+    if extra.get('kind'):
+        info = _direct_info(ydl, url, extra)
+        if not info:
+            raise yt_dlp.utils.ExtractorError('This link has no downloadable video.', expected=True)
+        return info
+    try:
+        return ydl.extract_info(url, download=False)
+    except DownloadCancelled:
+        raise
+    except Exception as e:
+        if 'Unsupported URL' not in str(e):
+            raise
+        try:
+            info = _direct_info(ydl, url, extra)
+        except Exception:
+            info = None
+        if info:
+            return info
+        raise
+
+
 # --------------------------------------------------------------------------
 # Entry points (called from Objective-C, always return a JSON string)
 # --------------------------------------------------------------------------
@@ -382,17 +519,78 @@ def _has_youtube_login(cookiefile):
         return False
 
 
-def fetch(url, cache_dir, cookiefile=''):
+_PLAYLIST_MAX = 500
+
+
+def _entry_url(e):
+    u = e.get('webpage_url') or e.get('url') or ''
+    if u and not u.startswith('http'):
+        if (e.get('ie_key') or '').lower().startswith('youtube') and re.fullmatch(r'[\w-]{11}', u):
+            u = 'https://www.youtube.com/watch?v=' + u
+    return u
+
+
+def _entry_thumb(e):
+    thumbs = [t for t in (e.get('thumbnails') or []) if t.get('url')]
+    if thumbs:
+        wide = [t for t in thumbs if (t.get('width') or 0) >= 320]
+        return (min(wide, key=lambda t: t.get('width') or 0) if wide else thumbs[-1])['url']
+    return e.get('thumbnail')
+
+
+def _playlist_json(info):
+    """A playlist or channel: its videos, without looking each one up (fast)."""
+    entries = []
+    for e in info.get('entries') or []:
+        if not e:
+            continue
+        u = _entry_url(e)
+        if not u:
+            continue
+        entries.append({'url': u, 'title': e.get('title') or 'Untitled video',
+                        'duration': e.get('duration') or 0, 'thumbnail': _entry_thumb(e)})
+        if len(entries) >= _PLAYLIST_MAX:
+            break
+    return {
+        'playlist': True,
+        'title': info.get('title') or 'Playlist',
+        'uploader': info.get('uploader') or info.get('channel') or '',
+        'site': info.get('extractor_key') or '',
+        'thumbnail': (entries[0]['thumbnail'] if entries else None) or _entry_thumb(info),
+        'count': len(entries),
+        'entries': entries,
+    }
+
+
+def _looks_like_tabs(entries):
+    """A YouTube channel link lists its tabs (Videos, Shorts, Live) instead of videos."""
+    urls = [_entry_url(e) for e in entries[:6]]
+    return bool(urls) and all(re.search(r'/(videos|shorts|streams|live|playlists|featured)/?$', u or '') for u in urls)
+
+
+def fetch(url, cache_dir, cookiefile='', extra=''):
     try:
-        with yt_dlp.YoutubeDL(_params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))) as ydl:
-            info = ydl.extract_info(url, download=False)
+        ex = _extra(extra)
+        params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
+        params['extract_flat'] = 'in_playlist'     # playlists: list the videos without opening each one
+        _apply_extra(params, ex)
+        with yt_dlp.YoutubeDL(params) as ydl:
+            info = _extract(ydl, url, ex)
+            if info and info.get('_type') == 'playlist':
+                entries = [e for e in (info.get('entries') or []) if e]
+                if entries and _looks_like_tabs(entries):
+                    tab = next((e for e in entries if re.search(r'/videos/?$', _entry_url(e))), entries[0])
+                    sub = ydl.extract_info(_entry_url(tab), download=False)
+                    if sub and sub.get('_type') == 'playlist':
+                        sub.setdefault('title', info.get('title'))
+                        info, entries = sub, [e for e in (sub.get('entries') or []) if e]
+                if len(entries) > 1:
+                    return json.dumps(_playlist_json(info))
+                if not entries:
+                    return json.dumps({'error': 'No video found at that link.'})
+                info = ydl.extract_info(_entry_url(entries[0]), download=False)
         if not info:
             return json.dumps({'error': 'No video found at that link.'})
-        if info.get('_type') == 'playlist':
-            entries = [e for e in (info.get('entries') or []) if e]
-            if not entries:
-                return json.dumps({'error': 'No video found at that link.'})
-            info = entries[0]
         _infos[url] = info
         thumbs = info.get('thumbnails') or []
         best_thumb = info.get('thumbnail')
@@ -411,6 +609,223 @@ def fetch(url, cache_dir, cookiefile=''):
             'duration': info.get('duration') or 0,
             'options': opts,
         })
+    except DownloadCancelled:
+        return json.dumps({'error': 'Cancelled.'})
+    except Exception as e:
+        _remember(e)
+        return json.dumps({'error': _clean(e)})
+
+
+# --------------------------------------------------------------------------
+# Streaming: pick links the built-in player can play right away (no download).
+# --------------------------------------------------------------------------
+def _stream_headers(f, info):
+    h = {}
+    h.update(info.get('http_headers') or {})
+    h.update(f.get('http_headers') or {})
+    return {str(k): str(v) for k, v in h.items() if v}
+
+
+def _stream_pick(info, max_h, audio_only):
+    """Returns a list of formats the player can play: one (picture and sound together)
+    or two (picture, then sound, which the player joins on the fly)."""
+    combined, video, audio, other = _kinds(info)
+    lim = (lambda f: _height(f) <= max_h) if max_h else (lambda f: True)
+    if audio_only:
+        good = [f for f in audio if _m4a(f)] or audio
+        if good:
+            return [max(good, key=_audio_key)]
+        rest = [f for f in combined + other if lim(f)]
+        return [min(rest, key=lambda f: (_height(f), f.get('tbr') or 0))] if rest else []
+    ok_c = [f for f in combined + other if lim(f) and f.get('url')
+            and (_hls(f) or f.get('ext') in ('mp4', 'm4v', 'mov'))]
+    c = max(ok_c, key=_rank, default=None)
+    gv = [f for f in video if lim(f) and f.get('ext') == 'mp4' and _photos_v(f) and not _hls(f) and f.get('url')]
+    ga = [f for f in audio if _m4a(f) and not _hls(f) and f.get('url')]
+    v = max(gv, key=_rank, default=None)
+    a = max(ga, key=_audio_key, default=None)
+    if v and a and (not c or _height(v) > _height(c)):
+        return [v, a]
+    if c:
+        return [c]
+    anyf = [f for f in combined + other if f.get('url')]
+    if anyf:
+        return [max([f for f in anyf if lim(f)] or anyf, key=_rank)]
+    return []
+
+
+def _hls_master(info):
+    """(playlist link, format) of the main HLS playlist (all qualities), when the video has one."""
+    for f in (info.get('formats') or []):
+        m = f.get('manifest_url')
+        if m and _hls(f) and str(m).startswith('http'):
+            return m, f
+    return None
+
+
+def _variants(info):
+    """Every quality the player can switch to at once, worked out now so changing quality needs no new lookup:
+    {height: {items, hls, height}} where each entry plays exactly that height."""
+    out = {}
+    try:
+        heights = sorted({int(f.get('height') or 0) for f in (info.get('formats') or []) if f.get('height')})
+        for h in heights:
+            if h < 100 or h > 2160:
+                continue
+            pk = _stream_pick(info, h, False)
+            if not pk or abs(_height(pk[0]) - h) > 8:
+                continue
+            out[str(h)] = {'items': [{'url': f['url'], 'headers': _stream_headers(f, info)} for f in pk],
+                           'hls': _hls(pk[0]), 'height': _height(pk[0])}
+    except Exception:
+        pass
+    return out
+
+
+def stream(url, cache_dir, cookiefile='', extra='', max_h=0, audio_only=0):
+    try:
+        ex = _extra(extra)
+        info = _infos.get(url)
+        if not info:
+            params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
+            _apply_extra(params, ex)
+            with yt_dlp.YoutubeDL(params) as ydl:
+                info = _extract(ydl, url, ex)
+            if info and info.get('_type') == 'playlist':
+                return json.dumps({'error': 'Pick one video to stream.'})
+        if not info:
+            return json.dumps({'error': 'No video found at that link.'})
+        audio_only = str(audio_only).lower() in ('1', 'true')
+        req = int(float(max_h or 0))
+        alt = None
+        if not audio_only and not req:
+            # Nothing asked for: open as fast as possible. A main playlist lets the player choose by itself;
+            # otherwise the best single-file stream (picture and sound together) starts at once.
+            m = _hls_master(info)
+            if m:
+                return json.dumps({'items': [{'url': m[0], 'headers': _stream_headers(m[1], info)}],
+                                   'hls': True, 'master': True, 'audio': False, 'height': 0, 'exact': True,
+                                   'variants': _variants(info)})
+            combined, _v, _a, other = _kinds(info)
+            ok_c = [f for f in combined + other if f.get('url') and (_hls(f) or f.get('ext') in ('mp4', 'm4v', 'mov'))]
+            if ok_c:
+                f = max(ok_c, key=_rank)
+                return json.dumps({'items': [{'url': f['url'], 'headers': _stream_headers(f, info)}],
+                                   'hls': _hls(f), 'audio': False, 'height': _height(f), 'exact': True,
+                                   'variants': _variants(info)})
+        # A quality was chosen: play that exact one, never a playlist that picks for itself.
+        best = None
+        for src in ([alt] if alt else []) + [info]:
+            pk = _stream_pick(src, req, audio_only)
+            if not pk:
+                continue
+            h = _height(pk[0])
+            if best is None or h > best[1]:
+                best = (pk, h, src)
+        if not best:
+            return json.dumps({'error': "This link can't be streamed. Try Download instead."})
+        picked, h, src = best
+        out = [{'url': f['url'], 'headers': _stream_headers(f, src)} for f in picked]
+        main = picked[0]
+        return json.dumps({
+            'items': out,
+            'hls': _hls(main),
+            'audio': audio_only,
+            'height': h,
+            'exact': (not req) or audio_only or abs(h - req) <= 8,
+            'variants': {} if audio_only else _variants(src),
+        })
+    except DownloadCancelled:
+        return json.dumps({'error': 'Cancelled.'})
+    except Exception as e:
+        _remember(e)
+        return json.dumps({'error': _clean(e)})
+
+
+def link(url, option_id, cache_dir, cookiefile='', extra=''):
+    """The link(s) a download of this option would fetch: the same lookup and the same pick as `download`,
+    so the copied link is the one that really works for the video chosen. One link, or two when picture and sound are separate."""
+    try:
+        ex = _extra(extra)
+        info = _infos.get(url)
+        if not info:
+            params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
+            _apply_extra(params, ex)
+            with yt_dlp.YoutubeDL(params) as ydl:
+                info = _extract(ydl, url, ex)
+            if info and info.get('_type') == 'playlist':
+                info = next((e for e in (info.get('entries') or []) if e), None)
+        if not info:
+            return json.dumps({'error': 'No video found at that link.'})
+        if option_id in ('audio', 'mp3'):
+            fmts, _ = _audio_plan(info)
+        else:
+            h = None if option_id in ('', 'best') else int(option_id.split(':', 1)[1])
+            _, fmts, _ = _plan(info, h)
+        out = [{'url': f['url'], 'headers': _stream_headers(f, info)} for f in fmts if f.get('url')]
+        if not out:
+            return json.dumps({'error': "Couldn't find a direct link for this video."})
+        return json.dumps({'items': out, 'hls': bool(fmts and _hls(fmts[0]))})
+    except DownloadCancelled:
+        return json.dumps({'error': 'Cancelled.'})
+    except Exception as e:
+        _remember(e)
+        return json.dumps({'error': _clean(e)})
+
+
+def _link_label(f):
+    h = _height(f)
+    if _none(f.get('vcodec')) and not _none(f.get('acodec')):
+        what = 'Sound only'
+    else:
+        what = (f'{_short(f)}p' if _short(f) else 'Video')
+    proto = 'HLS playlist' if _hls(f) else ('DASH' if 'dash' in (f.get('protocol') or '') else (f.get('ext') or 'file').upper())
+    tail = (f.get('url') or '').split('?')[0].rstrip('/').rsplit('/', 1)[-1]
+    return f'{what} · {proto}' + (f' · {tail[-28:]}' if tail else '')
+
+
+def links(url, option_id, cache_dir, cookiefile='', extra=''):
+    """Every link worth trying for this video: the one a download of the picked option fetches first,
+    then the main playlists (all qualities), then each quality on its own."""
+    try:
+        ex = _extra(extra)
+        info = _infos.get(url)
+        if not info:
+            params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
+            _apply_extra(params, ex)
+            with yt_dlp.YoutubeDL(params) as ydl:
+                info = _extract(ydl, url, ex)
+            if info and info.get('_type') == 'playlist':
+                info = next((e for e in (info.get('entries') or []) if e), None)
+        if not info:
+            return json.dumps({'error': 'No video found at that link.'})
+        out, seen = [], set()
+
+        def add(label, u, headers):
+            if u and u not in seen and len(out) < 30:
+                seen.add(u)
+                out.append({'label': label, 'url': u, 'headers': headers})
+
+        try:
+            if option_id in ('audio', 'mp3'):
+                fmts, _ = _audio_plan(info)
+            else:
+                h = None if option_id in ('', 'best') else int(option_id.split(':', 1)[1])
+                _, fmts, _ = _plan(info, h)
+            for f in fmts:
+                add('Best match · ' + _link_label(f), f.get('url'), _stream_headers(f, info))
+        except Exception:
+            pass
+        fl = [f for f in (info.get('formats') or []) if f.get('url') and f.get('format_note') != 'storyboard' and f.get('ext') != 'mhtml']
+        for f in fl:
+            m = f.get('manifest_url')
+            if m:
+                add('Main playlist (all qualities) · ' + m.split('?')[0].rstrip('/').rsplit('/', 1)[-1][-28:], m, _stream_headers(f, info))
+        for f in sorted(fl, key=_rank, reverse=True):
+            add(_link_label(f), f['url'], _stream_headers(f, info))
+        if not out:
+            return json.dumps({'error': "Couldn't find a direct link for this video."})
+        return json.dumps({'items': out})
     except DownloadCancelled:
         return json.dumps({'error': 'Cancelled.'})
     except Exception as e:
@@ -454,7 +869,7 @@ def _clear_dir(d):
             pass
 
 
-def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile=''):
+def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', extra=None):
     """One extract + download in a single session. Returns (result dict, error str, raw str)."""
     files = []
     parts = {}
@@ -485,15 +900,19 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile=''):
         params['extractor_args'] = {'youtube': {'player_client': clients}}
     if cookiefile:
         params['cookiefile'] = cookiefile
+    extra = extra or {}
+    _apply_extra(params, extra)
 
     try:
         with yt_dlp.YoutubeDL(params) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = _extract(ydl, url, extra)
             if info and info.get('_type') == 'playlist':
                 info = next((e for e in (info.get('entries') or []) if e), None)
             if not info:
                 return None, 'No video found at that link.', ''
 
+            if option_id.startswith('q:'):
+                option_id = _pick_option(info, option_id[2:])   # playlist downloads: one quality for all
             if option_id in ('audio', 'mp3'):
                 fmts, photos = _audio_plan(info)
                 kind = 'mp3' if option_id == 'mp3' else 'audio'
@@ -554,7 +973,8 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile=''):
     }, None, ''
 
 
-def download(task, url, option_id, out_dir, cache_dir, cookiefile=''):
+def download(task, url, option_id, out_dir, cache_dir, cookiefile='', extra=''):
+    ex = _extra(extra)
     youtube = _is_youtube(url, _infos.get(url))
     if youtube:
         attempts = [(c, '') for c in _YT_CLIENT_FALLBACKS]
@@ -568,8 +988,7 @@ def download(task, url, option_id, out_dir, cache_dir, cookiefile=''):
             return json.dumps({'error': 'Cancelled.'})
         if n:
             vgnative.progress(task, 0, 1, 0.0, 'retry', -1.0, -1.0)
-        _clear_dir(out_dir)
-        result, error, raw = _attempt(task, url, option_id, out_dir, cache_dir, clients, cookies)
+        result, error, raw = _attempt(task, url, option_id, out_dir, cache_dir, clients, cookies, ex)
         if result:
             return json.dumps(result)
         if error == 'Cancelled.' or not _blocked(raw or error):

@@ -1,8 +1,8 @@
 # VidGrab
 
-VidGrab is a video downloader for iPhone and iPad. Paste a link, choose your preferred quality, and download. You can also browse directly in the built-in browser, play a video, and use the Download button when it appears.
+A video downloader for iPhone. Paste a link, pick a quality, done. Or open the built-in browser, play a video, and tap the Download button that pops up on it.
 
-I made VidGrab to keep video downloading simple and straightforward, without requiring jailbreak tweaks or a bunch of additional packages.
+I made this because I wanted something simple that just works on my phone, without jailbreak tweaks or a pile of extra packages to install.
 
 Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 
@@ -18,7 +18,7 @@ Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 ## What it can do
 
 - Download from YouTube and lots of other sites, up to 4K when the site has it
-- Browse sites inside the app and grab whatever video is playing
+- Browse sites inside the app and grab whatever video is playing, and copy a video's direct link
 - Ad blocker in the browser
 - Run up to 10 downloads at the same time
 - Saves videos as MP4 so they play right away and can go into Photos
@@ -27,6 +27,14 @@ Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 - Favorites you can add, rename and rearrange
 - Clear the cache by hand or automatically every time the app opens
 - A "Fix playback" button for videos that won't play properly
+- Folders in Downloads: name them, pick any color, and move videos in
+- Storage card in Downloads that shows free space like iPhone Settings
+- Choose Download or Stream: stream plays right away in the built-in player, which has a download button to keep the video
+- Built-in player with swipe gestures
+- Auto subtitles made on your phone, no internet needed
+  - Best quality may make the phone hot or warm. Balanced or Fast is safest. Subtitles are not 100% accurate.
+- Import videos from Files
+- Repairs broken streams so the video still turns into a playable MP4
 
 ## Install
 
@@ -39,12 +47,15 @@ Works on iOS 15 and newer. No jailbreak needed.
 
 VidGrab wouldn't exist without **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**. It's the engine that does the real work of finding and downloading videos from all these sites. Huge thanks to the yt-dlp developers and everyone who keeps it working as sites change. If a site breaks, VidGrab can update yt-dlp from Settings, so fixes from their team reach you quickly.
 
+For auto subtitles, thanks to **[whisper.cpp](https://github.com/ggerganov/whisper.cpp)** by Georgi Gerganov and the ggml authors (MIT), which runs the speech model on the phone, and to **[OpenAI Whisper](https://github.com/openai/whisper)** (MIT), the model it is based on. Model files are hosted by [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp).
+
 Also used:
 
 - [FFmpeg](https://ffmpeg.org) for joining video and sound and converting files (LGPL 2.1 or later)
 - [LAME](https://lame.sourceforge.io) for MP3 (LGPL)
 - [Python for iOS](https://github.com/beeware/Python-Apple-support) by BeeWare, which lets yt-dlp run on iPhone (PSF License)
 - certifi, requests, urllib3, idna, charset-normalizer and websockets (Python packages yt-dlp relies on)
+- [TrollSpeed](https://github.com/Lessica/TrollSpeed) by Lessica for the speed display (MIT)
 - Ad-block filter lists from [uBlock Origin Lite](https://github.com/uBlockOrigin/uBOL-home) (GPLv3) and [Peter Lowe's list](https://pgl.yoyo.org/adservers/) (free for non-commercial use)
 
 ## Building it yourself

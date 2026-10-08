@@ -2,6 +2,7 @@
 #import "VGTheme.h"
 #import <AVKit/AVKit.h>
 #import <Photos/Photos.h>
+#import "VGKeepAlive.h"
 
 @implementation VGActions
 
@@ -11,10 +12,8 @@
 }
 
 + (void)play:(VGItem *)item from:(UIViewController *)vc {
-    AVPlayerViewController *p = [AVPlayerViewController new];
-    p.player = [AVPlayer playerWithURL:item.fileURL];
-    p.allowsPictureInPicturePlayback = YES;
-    [[self top:vc] presentViewController:p animated:YES completion:^{ [p.player play]; }];
+    VGPlayerViewController *p = [VGPlayerViewController playerFor:item];
+    [[self top:vc] presentViewController:p animated:YES completion:^{ [p start]; }];
 }
 
 + (void)saveToPhotos:(VGItem *)item from:(UIViewController *)vc {
@@ -61,6 +60,58 @@
 + (void)saveToFiles:(VGItem *)item from:(UIViewController *)vc {
     UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForExportingURLs:@[item.fileURL] asCopy:YES];
     [[self top:vc] presentViewController:p animated:YES completion:nil];
+}
+
++ (void)saveItemsToFiles:(NSArray<VGItem *> *)items from:(UIViewController *)vc {
+    NSArray *urls = [items valueForKey:@"fileURL"];
+    if (!urls.count) return;
+    UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForExportingURLs:urls asCopy:YES];
+    [[self top:vc] presentViewController:p animated:YES completion:nil];
+}
+
++ (void)shareItems:(NSArray<VGItem *> *)items from:(UIViewController *)vc source:(UIView *)source {
+    NSArray *urls = [items valueForKey:@"fileURL"];
+    if (!urls.count) return;
+    UIActivityViewController *a = [[UIActivityViewController alloc] initWithActivityItems:urls applicationActivities:nil];
+    a.popoverPresentationController.sourceView = source;
+    a.popoverPresentationController.sourceRect = source.bounds;
+    [[self top:vc] presentViewController:a animated:YES completion:nil];
+}
+
++ (void)saveItemsToPhotos:(NSArray<VGItem *> *)items from:(UIViewController *)vc {
+    NSMutableArray<NSURL *> *ok = [NSMutableArray array];
+    NSInteger audio = 0, format = 0;
+    for (VGItem *i in items) {
+        if (i.audio) audio++;
+        else if (!UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(i.fileURL.path)) format++;
+        else [ok addObject:i.fileURL];
+    }
+    NSString *(^skipped)(void) = ^NSString *{
+        NSMutableArray *why = [NSMutableArray array];
+        if (audio) [why addObject:[NSString stringWithFormat:@"%ld audio %@ (Photos only takes video)", (long)audio, audio == 1 ? @"file" : @"files"]];
+        if (format) [why addObject:[NSString stringWithFormat:@"%ld %@ in a format Photos doesn't accept", (long)format, format == 1 ? @"video" : @"videos"]];
+        return why.count ? [NSString stringWithFormat:@"Skipped %@. Use Save to Files for those.", [why componentsJoinedByString:@" and "]] : nil;
+    };
+    if (!ok.count) { [self alert:@"Nothing to save to Photos" message:skipped() from:vc]; return; }
+    [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus st) {
+        if (st != PHAuthorizationStatusAuthorized && st != PHAuthorizationStatusLimited) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self alert:@"No access to Photos" message:@"Turn on Photos access for VidGrab in Settings > Privacy & Security > Photos." from:vc];
+            });
+            return;
+        }
+        [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+            for (NSURL *u in ok) [PHAssetChangeRequest creationRequestForAssetFromVideoAtFileURL:u];
+        } completionHandler:^(BOOL success, NSError *err) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *more = skipped();
+                if (!success) { [self alert:@"Couldn't save to Photos" message:err.localizedDescription from:vc]; return; }
+                NSString *msg = [NSString stringWithFormat:@"Saved %lu %@ to Photos", (unsigned long)ok.count, ok.count == 1 ? @"video" : @"videos"];
+                if (more) [self alert:msg message:more from:vc];
+                else [self toast:msg icon:@"checkmark.circle.fill" in:vc.view.window ?: vc.view];
+            });
+        }];
+    }];
 }
 
 + (void)alert:(NSString *)title message:(NSString *)message from:(UIViewController *)vc {

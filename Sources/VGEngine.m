@@ -1,5 +1,8 @@
 #import "VGEngine.h"
 #import <objc/runtime.h>
+#include <stdio.h>
+#include <errno.h>
+#include <sys/stdio.h>
 #import "VGPython.h"
 #import <AVFoundation/AVFoundation.h>
 #import "VGTranscoder.h"
@@ -15,6 +18,7 @@ NSString *const VGTaskFinishedNotification = @"VGTaskFinishedNotification";
 @end
 
 @implementation VGVideo
+- (BOOL)isPlaylist { return self.entries != nil; }
 @end
 
 @interface VGTask ()
@@ -31,6 +35,7 @@ NSString *const VGTaskFinishedNotification = @"VGTaskFinishedNotification";
 @property (nonatomic, strong, nullable) VGTranscoder *transcoder;
 @property (nonatomic, strong, nullable) VGConvert *converter;
 @property (nonatomic) CFAbsoluteTime lastPost;
+@property (nonatomic, copy) NSString *resumeKey;
 @end
 
 @implementation VGTask
@@ -47,11 +52,20 @@ static NSString *supportPath(NSString *name) {
     return [dir stringByAppendingPathComponent:name];
 }
 
+/// Private Vault files live outside Documents, so they don't show in the Files app.
+static NSString *vaultDir(void) {
+    NSString *base = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *dir = [base stringByAppendingPathComponent:@"vault"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:@{NSFileProtectionKey: NSFileProtectionComplete} error:nil];
+    return dir;
+}
+
 #pragma mark - Item
 
 @implementation VGItem
 
 - (NSURL *)fileURL {
+    if (self.vault) return [NSURL fileURLWithPath:[vaultDir() stringByAppendingPathComponent:self.fileName]];
     return [NSURL fileURLWithPath:[documentsDir() stringByAppendingPathComponent:self.fileName]];
 }
 
@@ -66,7 +80,8 @@ static NSString *supportPath(NSString *name) {
 - (NSDictionary *)dict {
     return @{@"file": self.fileName, @"title": self.title, @"site": self.site ?: @"", @"res": self.res ?: @"",
              @"duration": @(self.duration), @"bytes": @(self.bytes), @"audio": @(self.audio),
-             @"photos": @(self.photos), @"date": @(self.date.timeIntervalSince1970)};
+             @"photos": @(self.photos), @"date": @(self.date.timeIntervalSince1970), @"vault": @(self.vault),
+             @"folder": self.folderID ?: @""};
 }
 
 + (instancetype)fromDict:(NSDictionary *)d {
@@ -80,7 +95,32 @@ static NSString *supportPath(NSString *name) {
     i.audio = [d[@"audio"] boolValue];
     i.photos = [d[@"photos"] boolValue];
     i.date = [NSDate dateWithTimeIntervalSince1970:[d[@"date"] doubleValue]];
+    i.vault = [d[@"vault"] boolValue];
+    i.folderID = [d[@"folder"] length] ? d[@"folder"] : nil;
     return i;
+}
+
+@end
+
+@implementation VGFolder
+
+- (UIColor *)color {
+    unsigned int v = 0;
+    [[NSScanner scannerWithString:self.colorHex ?: @"0A84FF"] scanHexInt:&v];
+    return [UIColor colorWithRed:((v >> 16) & 0xFF) / 255.0 green:((v >> 8) & 0xFF) / 255.0 blue:(v & 0xFF) / 255.0 alpha:1];
+}
+
++ (NSString *)hexFromColor:(UIColor *)color {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![color getRed:&r green:&g blue:&b alpha:&a]) {
+        CGFloat w = 0;
+        if ([color getWhite:&w alpha:&a]) r = g = b = w;
+    }
+    return [NSString stringWithFormat:@"%02X%02X%02X", (int)lround(MIN(MAX(r, 0), 1) * 255), (int)lround(MIN(MAX(g, 0), 1) * 255), (int)lround(MIN(MAX(b, 0), 1) * 255)];
+}
+
+- (NSDictionary *)dict {
+    return @{@"id": self.identifier, @"name": self.name, @"color": self.colorHex, @"date": @(self.date.timeIntervalSince1970)};
 }
 
 @end
@@ -89,6 +129,7 @@ static NSString *supportPath(NSString *name) {
 
 @interface VGEngine ()
 @property (nonatomic, strong) NSMutableArray<VGItem *> *library;
+@property (nonatomic, strong) NSMutableArray<VGFolder *> *folderList;
 @property (nonatomic, strong) NSMutableArray<VGTask *> *queue;
 @property (nonatomic) NSUInteger nextTaskID;
 @property (nonatomic, strong) NSMutableString *convLog;   // recent conversion steps, for Copy details
@@ -108,9 +149,14 @@ static NSString *supportPath(NSString *name) {
 - (void)start {
     [self loadLibrary];
     [[VGPython shared] start];
+    [self resumePending];
     // Clear temp work folders from earlier runs.
     NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:@"work"];
     [NSFileManager.defaultManager removeItemAtPath:work error:nil];
+    // And any half-made MP4 (".partial-*.mp4") left behind by a crash or force quit: it was never a real download.
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *n in [fm contentsOfDirectoryAtPath:documentsDir() error:nil])
+        if ([n hasPrefix:@".partial-"] && [n hasSuffix:@".mp4"]) [fm removeItemAtPath:[documentsDir() stringByAppendingPathComponent:n] error:nil];
 }
 
 - (NSString *)engineVersion { return [VGPython shared].engineVersion ?: @"starting…"; }
@@ -121,14 +167,93 @@ static NSString *supportPath(NSString *name) {
 
 - (void)loadLibrary {
     self.library = [NSMutableArray array];
+    self.folderList = [NSMutableArray array];
+    NSData *fd = [NSData dataWithContentsOfFile:supportPath(@"folders.json")];
+    NSArray *farr = fd ? [NSJSONSerialization JSONObjectWithData:fd options:0 error:nil] : nil;
+    for (NSDictionary *x in ([farr isKindOfClass:NSArray.class] ? farr : @[])) {
+        if (![x isKindOfClass:NSDictionary.class] || ![x[@"id"] length]) continue;
+        VGFolder *f = [VGFolder new];
+        f.identifier = x[@"id"];
+        f.name = [x[@"name"] length] ? x[@"name"] : @"Folder";
+        f.colorHex = [x[@"color"] length] == 6 ? x[@"color"] : @"0A84FF";
+        f.date = [NSDate dateWithTimeIntervalSince1970:[x[@"date"] doubleValue]];
+        [self.folderList addObject:f];
+    }
     NSData *d = [NSData dataWithContentsOfFile:supportPath(@"library.json")];
     NSArray *arr = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSDictionary *x in ([arr isKindOfClass:NSArray.class] ? arr : @[])) {
         VGItem *i = [VGItem fromDict:x];
         // Drop entries whose files were removed in the Files app.
-        if (i.fileName && [fm fileExistsAtPath:i.fileURL.path]) [self.library addObject:i];
+        if (i.fileName && [fm fileExistsAtPath:i.fileURL.path]) {
+            if (i.folderID && (i.vault || ![self folderWithID:i.folderID])) i.folderID = nil;   // its folder is gone, or it is in the vault
+            [self.library addObject:i];
+        }
     }
+}
+
+#pragma mark Folders
+
+- (NSArray<VGFolder *> *)folders { return [self.folderList copy]; }
+
+- (VGFolder *)folderWithID:(NSString *)identifier {
+    if (!identifier.length) return nil;
+    for (VGFolder *f in self.folderList) if ([f.identifier isEqualToString:identifier]) return f;
+    return nil;
+}
+
+- (void)saveFolders {
+    NSMutableArray *arr = [NSMutableArray array];
+    for (VGFolder *f in self.folderList) [arr addObject:[f dict]];
+    [[NSJSONSerialization dataWithJSONObject:arr options:0 error:nil] writeToFile:supportPath(@"folders.json") atomically:YES];
+}
+
+static NSString *cleanFolderName(NSString *name) {
+    NSString *n = [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (n.length > 60) n = [n substringToIndex:60];
+    return n.length ? n : @"New Folder";
+}
+
+- (VGFolder *)createFolderNamed:(NSString *)name colorHex:(NSString *)hex {
+    VGFolder *f = [VGFolder new];
+    f.identifier = [NSUUID UUID].UUIDString;
+    f.name = cleanFolderName(name);
+    f.colorHex = hex.length == 6 ? hex : @"0A84FF";
+    f.date = [NSDate date];
+    [self.folderList addObject:f];
+    [self saveFolders];
+    [NSNotificationCenter.defaultCenter postNotificationName:VGLibraryDidChangeNotification object:nil];
+    return f;
+}
+
+- (void)updateFolder:(VGFolder *)folder name:(NSString *)name colorHex:(NSString *)hex {
+    if (![self.folderList containsObject:folder]) return;
+    folder.name = cleanFolderName(name);
+    if (hex.length == 6) folder.colorHex = hex;
+    [self saveFolders];
+    [NSNotificationCenter.defaultCenter postNotificationName:VGLibraryDidChangeNotification object:nil];
+}
+
+- (void)deleteFolder:(VGFolder *)folder {
+    for (VGItem *i in self.library) if ([i.folderID isEqualToString:folder.identifier]) i.folderID = nil;
+    [self.folderList removeObject:folder];
+    [self saveFolders];
+    [self saveLibrary];
+}
+
+- (void)setItems:(NSArray<VGItem *> *)items folder:(VGFolder *)folder {
+    if (folder && ![self.folderList containsObject:folder]) return;
+    for (VGItem *i in items) {
+        if (i.vault) continue;
+        i.folderID = folder.identifier;
+    }
+    [self saveLibrary];
+}
+
+- (NSArray<VGItem *> *)itemsInFolder:(VGFolder *)folder {
+    NSMutableArray *out = [NSMutableArray array];
+    for (VGItem *i in self.library) if (!i.vault && [i.folderID isEqualToString:folder.identifier]) [out addObject:i];
+    return out;
 }
 
 - (void)saveLibrary {
@@ -143,6 +268,38 @@ static NSString *supportPath(NSString *name) {
     [NSFileManager.defaultManager removeItemAtPath:[item thumbPath] error:nil];
     [self.library removeObject:item];
     [self saveLibrary];
+}
+
+- (void)setItem:(VGItem *)item inVault:(BOOL)vault {
+    if (item.vault == vault) return;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *from = item.fileURL;
+    NSString *dir = vault ? vaultDir() : documentsDir();
+    NSString *name = item.fileName;
+    // Avoid clashing with a file of the same name in the other place.
+    for (int n = 2; [fm fileExistsAtPath:[dir stringByAppendingPathComponent:name]]; n++)
+        name = [NSString stringWithFormat:@"%@ (%d).%@", [item.fileName stringByDeletingPathExtension], n, item.fileName.pathExtension];
+    NSString *oldThumb = [item thumbPath];
+    NSError *e = nil;
+    if (![fm moveItemAtURL:from toURL:[NSURL fileURLWithPath:[dir stringByAppendingPathComponent:name]] error:&e]) return;
+    item.fileName = name;
+    item.vault = vault;
+    if (vault) item.folderID = nil;   // the vault has no folders
+    if (![oldThumb isEqualToString:[item thumbPath]]) [fm moveItemAtPath:oldThumb toPath:[item thumbPath] error:nil];
+    [self saveLibrary];
+}
+
++ (VGOption *)presetOption:(NSString *)quality {
+    VGOption *o = [VGOption new];
+    BOOL mp3 = [quality isEqualToString:@"mp3"];
+    o.identifier = [@"q:" stringByAppendingString:quality];
+    o.res = mp3 ? @"MP3" : ([quality isEqualToString:@"best"] ? @"Best" : [quality stringByAppendingString:@"p"]);
+    o.sizeText = @"";
+    o.format = mp3 ? @"MP3" : @"MP4";
+    o.photos = !mp3;
+    o.audio = mp3;
+    o.convert = NO;
+    return o;
 }
 
 - (long long)totalBytes {
@@ -196,12 +353,94 @@ static NSString *baseDomain(NSString *host) {
 #pragma mark Fetch
 
 - (void)fetch:(NSString *)url completion:(void (^)(VGVideo *, NSString *))completion {
+    [self fetch:url extra:nil completion:completion];
+}
+
+- (void)directLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *, NSString *))completion {
+    NSString *oid = option.identifier ?: @"best";
+    NSString *extraJSON = video.extra ?: @"";
+    [self cookiesFor:video.url completion:^(NSString *cookies) {
+        [[VGPython shared] call:@"vgbridge" function:@"link"
+                           args:@[video.url, oid, [VGPython shared].cacheDir, cookies ?: @"", extraJSON]
+                     completion:^(NSDictionary *r, NSString *error) {
+            if (!r) { completion(nil, error ?: @"Couldn't get the link."); return; }
+            completion(r, nil);
+        }];
+    }];
+}
+
+- (void)linkListFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *, NSString *))completion {
+    NSString *oid = option.identifier ?: @"best";
+    NSString *extraJSON = video.extra ?: @"";
+    [self cookiesFor:video.url completion:^(NSString *cookies) {
+        [[VGPython shared] call:@"vgbridge" function:@"links"
+                           args:@[video.url, oid, [VGPython shared].cacheDir, cookies ?: @"", extraJSON]
+                     completion:^(NSDictionary *r, NSString *error) {
+            if (!r) { completion(nil, error ?: @"Couldn't get the links."); return; }
+            completion(r, nil);
+        }];
+    }];
+}
+
+- (void)streamLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *, NSString *))completion {
+    NSInteger maxH = 0;
+    if (option && !option.audio) {
+        NSString *r = option.res ?: @"";
+        if ([r hasPrefix:@"4K"]) maxH = 2160;
+        else if ([r hasPrefix:@"2K"]) maxH = 1440;
+        else maxH = r.integerValue;
+    }
+    BOOL audio = option.audio;
+    NSString *extraJSON = video.extra ?: @"";
+    [self cookiesFor:video.url completion:^(NSString *cookies) {
+        [[VGPython shared] call:@"vgbridge" function:@"stream"
+                           args:@[video.url, [VGPython shared].cacheDir, cookies ?: @"", extraJSON, [NSString stringWithFormat:@"%ld", (long)maxH], audio ? @"1" : @"0"]
+                     completion:^(NSDictionary *r, NSString *error) {
+            if (!r) { completion(nil, error ?: @"Couldn't start the stream."); return; }
+            completion(r, nil);
+        }];
+    }];
+}
+
+- (void)fetch:(NSString *)url extra:(NSDictionary *)extra completion:(void (^)(VGVideo *, NSString *))completion {
+    NSString *extraJSON = @"";
+    if ([extra isKindOfClass:NSDictionary.class] && extra.count && [NSJSONSerialization isValidJSONObject:extra]) {
+        NSData *d = [NSJSONSerialization dataWithJSONObject:extra options:0 error:nil];
+        if (d) extraJSON = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: @"";
+    }
     [self cookiesFor:url completion:^(NSString *cookies) {
-    [[VGPython shared] call:@"vgbridge" function:@"fetch" args:@[url, [VGPython shared].cacheDir, cookies]
+    [[VGPython shared] call:@"vgbridge" function:@"fetch" args:@[url, [VGPython shared].cacheDir, cookies, extraJSON]
                  completion:^(NSDictionary *r, NSString *error) {
         if (!r) { completion(nil, error); return; }
         VGVideo *v = [VGVideo new];
         v.url = url;
+        v.extra = extraJSON.length ? extraJSON : nil;
+        if ([r[@"playlist"] boolValue]) {
+            v.title = [r[@"title"] isKindOfClass:NSString.class] ? r[@"title"] : @"Playlist";
+            v.uploader = [r[@"uploader"] isKindOfClass:NSString.class] && [r[@"uploader"] length] ? r[@"uploader"] : nil;
+            v.site = [r[@"site"] isKindOfClass:NSString.class] ? r[@"site"] : nil;
+            v.thumbnail = [r[@"thumbnail"] isKindOfClass:NSString.class] ? r[@"thumbnail"] : nil;
+            v.options = @[];
+            NSMutableArray *list = [NSMutableArray array];
+            double total = 0;
+            for (NSDictionary *e in [r[@"entries"] isKindOfClass:NSArray.class] ? r[@"entries"] : @[]) {
+                if (![e isKindOfClass:NSDictionary.class] || ![e[@"url"] isKindOfClass:NSString.class]) continue;
+                VGVideo *x = [VGVideo new];
+                x.url = e[@"url"];
+                x.title = [e[@"title"] isKindOfClass:NSString.class] ? e[@"title"] : @"Untitled video";
+                x.duration = [e[@"duration"] isKindOfClass:NSNumber.class] ? [e[@"duration"] doubleValue] : 0;
+                x.thumbnail = [e[@"thumbnail"] isKindOfClass:NSString.class] ? e[@"thumbnail"] : nil;
+                x.site = v.site;
+                x.uploader = v.uploader;
+                x.options = @[];
+                total += x.duration;
+                [list addObject:x];
+            }
+            v.entries = list;
+            v.duration = total;
+            completion(v, nil);
+            return;
+        }
         v.title = r[@"title"] ?: @"Untitled video";
         v.uploader = [r[@"uploader"] isKindOfClass:NSString.class] ? r[@"uploader"] : nil;
         v.site = [r[@"site"] isKindOfClass:NSString.class] ? r[@"site"] : nil;
@@ -272,19 +511,96 @@ static NSString *formatETA(double s) {
     [self post:task force:NO];
 }
 
+// ---- Resume after the app closes or crashes ----
+static NSString *resumeRoot(void) {
+    NSString *base = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *d = [base stringByAppendingPathComponent:@"VidGrabResume"];
+    [NSFileManager.defaultManager createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    return d;
+}
+static NSString *resumeFile(void) { return [resumeRoot() stringByAppendingPathComponent:@"pending.json"]; }
+
+/// True when downloads are running or were cut off and are waiting to resume. Cache clearing leaves the engine's cache alone then.
++ (BOOL)hasUnfinishedDownloads {
+    if ([VGEngine shared].activeCount > 0) return YES;
+    NSData *d = [NSData dataWithContentsOfFile:resumeFile()];
+    NSArray *list = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    return [list isKindOfClass:NSArray.class] && list.count > 0;
+}
+
++ (BOOL)hasUnfinished {
+    NSData *d = [NSData dataWithContentsOfFile:resumeFile()];
+    NSArray *l = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    return [l isKindOfClass:NSArray.class] && l.count > 0;
+}
+
+- (void)savePending {
+    NSMutableArray *out = [NSMutableArray array];
+    for (VGTask *t in self.queue) {
+        if (t.state != VGTaskQueued && t.state != VGTaskRunning) continue;
+        if (!t.resumeKey || !t.video.url) continue;
+        VGOption *o = t.option;
+        [out addObject:@{@"key": t.resumeKey, @"url": t.video.url, @"title": t.video.title ?: @"",
+                         @"uploader": t.video.uploader ?: @"", @"site": t.video.site ?: @"",
+                         @"thumb": t.video.thumbnail ?: @"", @"duration": @(isfinite(t.video.duration) ? t.video.duration : 0), @"extra": t.video.extra ?: @"",
+                         @"opt": @{@"id": o.identifier ?: @"", @"res": o.res ?: @"", @"size": o.sizeText ?: @"", @"fmt": o.format ?: @"",
+                                   @"photos": @(o.photos), @"audio": @(o.audio), @"convert": @(o.convert)}}];
+    }
+    NSData *d = [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
+    if (d) [d writeToFile:resumeFile() atomically:YES];
+}
+
+/// Called once at launch: puts back every download that was still going when the app closed.
+- (void)resumePending {
+    NSData *d = [NSData dataWithContentsOfFile:resumeFile()];
+    NSArray *list = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    if (![list isKindOfClass:NSArray.class]) return;
+    NSMutableSet *keep = [NSMutableSet set];
+    for (NSDictionary *e in list) {
+        if (![e isKindOfClass:NSDictionary.class] || ![e[@"url"] length] || ![e[@"key"] length]) continue;
+        VGVideo *v = [VGVideo new];
+        v.url = e[@"url"]; v.title = e[@"title"];
+        v.uploader = [e[@"uploader"] length] ? e[@"uploader"] : nil;
+        v.site = [e[@"site"] length] ? e[@"site"] : nil;
+        v.thumbnail = [e[@"thumb"] length] ? e[@"thumb"] : nil;
+        v.duration = [e[@"duration"] doubleValue];
+        v.extra = [e[@"extra"] length] ? e[@"extra"] : nil;
+        NSDictionary *od = e[@"opt"];
+        VGOption *o = [VGOption new];
+        o.identifier = od[@"id"]; o.res = od[@"res"]; o.sizeText = od[@"size"]; o.format = od[@"fmt"];
+        o.photos = [od[@"photos"] boolValue]; o.audio = [od[@"audio"] boolValue]; o.convert = [od[@"convert"] boolValue];
+        v.options = @[o];
+        [keep addObject:e[@"key"]];
+        VGTask *t = [self download:v option:o progress:nil completion:nil key:e[@"key"]];
+        t.stage = @"Resuming…";
+    }
+    // Throw away partial files that no longer belong to any download.
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *n in [fm contentsOfDirectoryAtPath:resumeRoot() error:nil])
+        if (![n isEqualToString:@"pending.json"] && ![keep containsObject:n])
+            [fm removeItemAtPath:[resumeRoot() stringByAppendingPathComponent:n] error:nil];
+}
+
 - (VGTask *)download:(VGVideo *)video option:(VGOption *)option progress:(VGProgress)progress
           completion:(void (^)(VGItem *, NSString *))completion {
+    return [self download:video option:option progress:progress completion:completion key:nil];
+}
+
+- (VGTask *)download:(VGVideo *)video option:(VGOption *)option progress:(VGProgress)progress
+          completion:(void (^)(VGItem *, NSString *))completion key:(NSString *)key {
     if (!self.queue) self.queue = [NSMutableArray array];
     VGTask *t = [VGTask new];
     t.identifier = [NSString stringWithFormat:@"t%lu", (unsigned long)++self.nextTaskID];
     t.video = video;
     t.option = option;
+    t.resumeKey = key ?: NSUUID.UUID.UUIDString;
     t.state = VGTaskQueued;
     t.stage = @"Waiting…";
     t.detail = [NSString stringWithFormat:@"%@ · %@", option.res, option.sizeText.length ? option.sizeText : option.format];
     t.progressHandler = progress;
     t.completionHandler = completion;
     [self.queue addObject:t];
+    [self savePending];
     [self post:t force:YES];
     [self pump];
     return t;
@@ -320,6 +636,7 @@ static NSString *formatETA(double s) {
     task.error = nil;
     task.fraction = 0;
     task.stage = @"Waiting…";
+    [self savePending];
     [self post:task force:YES];
     [self pump];
 }
@@ -332,7 +649,8 @@ static NSString *formatETA(double s) {
 
 - (void)finish:(VGTask *)task item:(VGItem *)item error:(NSString *)err work:(NSString *)work {
     [[VGPython shared] forgetTask:task.identifier];
-    if (work) [NSFileManager.defaultManager removeItemAtPath:work error:nil];
+    BOOL keepPartial = !item && err.length && ![err isEqualToString:@"Cancelled."];  // a failed one keeps its partial files for Retry
+    if (work && !keepPartial) [NSFileManager.defaultManager removeItemAtPath:work error:nil];
     task.export = nil;
     task.transcoder = nil;
     task.converter = nil;
@@ -342,6 +660,8 @@ static NSString *formatETA(double s) {
     else if ([err isEqualToString:@"Cancelled."]) task.state = VGTaskCancelled;
     else task.state = VGTaskFailed;
     if (task.state != VGTaskFailed) [self.queue removeObject:task];  // failed ones stay so they can be retried
+    if (task.resumeKey && !keepPartial) [NSFileManager.defaultManager removeItemAtPath:[resumeRoot() stringByAppendingPathComponent:task.resumeKey] error:nil];
+    [self savePending];
     if (task.completionHandler) task.completionHandler(item, err);
     [NSNotificationCenter.defaultCenter postNotificationName:VGTaskFinishedNotification object:task];
     [self post:task force:YES];
@@ -358,8 +678,8 @@ static NSString *formatETA(double s) {
     BOOL heavy = option.convert;
     double share = heavy ? 0.45 : (option.audio ? 0.7 : 0.9);  // part of the bar used by the download itself
 
-    NSString *work = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"work"] stringByAppendingPathComponent:task.identifier];
-    [NSFileManager.defaultManager removeItemAtPath:work error:nil];
+    // Kept between launches (not wiped) so a download that was cut off carries on from its partial files.
+    NSString *work = [resumeRoot() stringByAppendingPathComponent:task.resumeKey];
     [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
 
     __weak typeof(self) ws = self;
@@ -378,7 +698,7 @@ static NSString *formatETA(double s) {
     } forTask:task.identifier];
 
     [self cookiesFor:video.url completion:^(NSString *cookies) {
-        [py call:@"vgbridge" function:@"download" args:@[task.identifier, video.url, option.identifier, work, py.cacheDir, cookies]
+        [py call:@"vgbridge" function:@"download" args:@[task.identifier, video.url, option.identifier, work, py.cacheDir, cookies, video.extra ?: @""]
       completion:^(NSDictionary *r, NSString *error) {
             if (!r) { [ws finish:task item:nil error:error work:work]; return; }
             [ws postProcess:task result:r work:work share:share];
@@ -482,8 +802,107 @@ static double brightness(CGImageRef img) {
     });
 }
 
+// A hidden temporary file in Documents: same volume as the final folder (so the last step is one atomic rename),
+// a dot name (kept out of the Files app) and an .mp4 ending (AVFoundation decides what a file is by its ending).
+static NSString *partialPath(void) {
+    return [documentsDir() stringByAppendingPathComponent:[NSString stringWithFormat:@".partial-%@.mp4", NSUUID.UUID.UUIDString]];
+}
+
+static NSString *noDot(NSString *s) {
+    NSString *t = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    while ([t hasSuffix:@"."]) t = [t substringToIndex:t.length - 1];
+    return t;
+}
+
+/// Puts a finished, checked file into Documents under a name nobody else has, in one step. renamex_np with
+/// RENAME_EXCL never overwrites, so two downloads with the same title can't clobber each other.
+- (NSString *)installPartial:(NSString *)partial base:(NSString *)base error:(NSString **)error {
+    for (int attempt = 0; attempt < 25; attempt++) {
+        NSString *dest = [documentsDir() stringByAppendingPathComponent:[self uniqueName:base ext:@"mp4"]];
+        if (renamex_np(partial.fileSystemRepresentation, dest.fileSystemRepresentation, RENAME_EXCL) == 0) return dest;
+        if (errno != EEXIST) {
+            if (error) *error = [NSString stringWithFormat:@"couldn't save the finished video (%s)", strerror(errno)];
+            return nil;
+        }
+    }
+    if (error) *error = @"couldn't find a free name for the finished video";
+    return nil;
+}
+
+/// A download that couldn't become an MP4 is never thrown away: the originals move out of the temporary work folder
+/// (which is wiped when the task ends) into Downloads. Returns the name of the first one kept, or nil if none could be.
+- (NSString *)keepOriginals:(NSArray<NSString *> *)paths labels:(NSArray<NSString *> *)labels base:(NSString *)base task:(VGTask *)task {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *firstName = nil;
+    for (NSUInteger i = 0; i < paths.count; i++) {
+        NSString *path = paths[i];
+        if (![fm fileExistsAtPath:path]) continue;
+        NSDictionary *p = [VGConvert probe:path];
+        NSString *c = p[@"container"] ?: @"";
+        NSString *ext = path.pathExtension.lowercaseString.length ? path.pathExtension.lowercaseString : @"mp4";
+        if ([c isEqualToString:@"mpegts"]) ext = @"ts";
+        else if ([c hasPrefix:@"matroska"]) ext = [ext isEqualToString:@"webm"] ? @"webm" : @"mkv";
+        else if ([c isEqualToString:@"flv"]) ext = @"flv";
+        NSString *label = labels.count > i ? labels[i] : @"";
+        NSString *name = label.length ? [NSString stringWithFormat:@"%@ (%@)", base, label] : base;
+        NSString *dest = [documentsDir() stringByAppendingPathComponent:[self uniqueName:name ext:ext]];
+        NSError *e = nil;
+        if (![fm moveItemAtPath:path toPath:dest error:&e] && ![fm copyItemAtPath:path toPath:dest error:&e]) continue;
+        VGItem *item = [VGItem new];
+        item.fileName = dest.lastPathComponent;
+        item.title = label.length ? [NSString stringWithFormat:@"%@ (%@)", task.video.title, label] : task.video.title;
+        item.site = task.video.site;
+        item.res = task.option.res;
+        item.duration = task.video.duration;
+        item.audio = c.length && ![p[@"video"] length];
+        item.photos = NO;
+        item.date = [NSDate date];
+        item.bytes = [[fm attributesOfItemAtPath:dest error:nil][NSFileSize] longLongValue];
+        [self makeThumbnailFor:item fallbackURL:task.video.thumbnail];
+        [self.library insertObject:item atIndex:0];
+        if (!firstName) firstName = dest.lastPathComponent;
+    }
+    if (firstName) [self saveLibrary];
+    return firstName;
+}
+
 /// Turns the downloaded file(s) into the final MP4 / M4A / MP3 in Documents.
+///
+/// Video never gets written over anything: the MP4 is built as a hidden partial file, checked natively
+/// (vg_validate_mp4), checked again with AVFoundation, and only then renamed into place. If anything fails the
+/// partial is deleted and the downloaded originals are kept in Downloads (keepOriginals), with an explanation.
 - (void)postProcess:(VGTask *)task result:(NSDictionary *)r work:(NSString *)work share:(double)share {
+    // Some sites glue a fake picture header in front of every piece of a stream. Strip it first (once), so everything
+    // below sees a normal transport stream.
+    if (!r[@"_cleaned"] && ![r[@"kind"] isEqualToString:@"mp3"] && ![r[@"kind"] isEqualToString:@"audio"] && [r[@"files"] count]) {
+        NSArray<NSString *> *orig = r[@"files"];
+        __weak typeof(self) wsc = self;
+        [self update:task fraction:share stage:@"Checking the file" detail:@""];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSMutableArray<NSString *> *now = [NSMutableArray new];
+            NSMutableArray<NSString *> *lines = [NSMutableArray new];
+            for (NSUInteger i = 0; i < orig.count; i++) {
+                NSString *f = orig[i];
+                NSString *out = [work stringByAppendingPathComponent:[NSString stringWithFormat:@"clean%lu.ts", (unsigned long)i]];
+                NSDictionary *c = [VGConvert tsClean:f to:out];   // decided by what is inside, never by the file name
+                if (c[@"path"]) {
+                    [now addObject:c[@"path"]];
+                    [lines addObject:[NSString stringWithFormat:@"[Media] cleaned %@: removed %.1f KB of junk between %@ pieces", f.lastPathComponent, [c[@"junk"] doubleValue] / 1024.0, c[@"pieces"]]];
+                } else {
+                    [now addObject:f];
+                    if (c[@"error"]) [lines addObject:[NSString stringWithFormat:@"[Media] clean skipped for %@: %@", f.lastPathComponent, c[@"error"]]];
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                for (NSString *l in lines) [wsc note:l];
+                NSMutableDictionary *r2 = [r mutableCopy];
+                r2[@"files"] = now;
+                r2[@"_cleaned"] = @YES;
+                [wsc postProcess:task result:r2 work:work share:share];
+            });
+        });
+        return;
+    }
     NSArray<NSString *> *files = r[@"files"];
     NSString *kind = r[@"kind"];
     NSString *base = r[@"name"] ?: @"video";
@@ -492,6 +911,7 @@ static double brightness(CGImageRef img) {
     VGOption *option = task.option;
     __weak typeof(self) ws = self;
     NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *labels = files.count > 1 ? @[@"video part", @"sound part"] : nil;
 
     void (^store)(NSString *, BOOL) = ^(NSString *path, BOOL photos) {
         if ([[VGPython shared] isTaskCancelled:task.identifier]) {
@@ -515,43 +935,84 @@ static double brightness(CGImageRef img) {
         [ws finish:task item:item error:nil work:work];
     };
     void (^fail)(NSString *) = ^(NSString *err) { [ws finish:task item:nil error:err work:work]; };
-    void (^keepOriginal)(void) = ^{
-        NSString *c = [VGConvert probe:first][@"container"] ?: @"";
-        NSString *ext = first.pathExtension.lowercaseString.length ? first.pathExtension.lowercaseString : @"mp4";
-        if ([c isEqualToString:@"mpegts"]) ext = @"ts";
-        else if ([c hasPrefix:@"matroska"]) ext = [ext isEqualToString:@"webm"] ? @"webm" : @"mkv";
-        else if ([c isEqualToString:@"flv"]) ext = @"flv";
-        NSString *dest = [documentsDir() stringByAppendingPathComponent:[ws uniqueName:base ext:ext]];
-        NSError *e = nil;
-        [fm moveItemAtPath:first toPath:dest error:&e];
-        if (e) fail(e.localizedDescription); else store(dest, NO);
+
+    NSString *partial = partialPath();
+    void (^media)(NSString *) = ^(NSString *line) { [ws note:[@"[Media] " stringByAppendingString:line]]; };
+    void (^dropPartial)(void) = ^{ [fm removeItemAtPath:partial error:nil]; };
+    NSString *(^cant)(NSString *) = ^NSString *(NSString *reason) {
+        return [NSString stringWithFormat:@"Couldn't turn this into an MP4 (%@)", noDot(reason)];
     };
-    NSString *mp4 = [documentsDir() stringByAppendingPathComponent:[self uniqueName:base ext:@"mp4"]];
+    // Conversion didn't work out: drop the half-made file, keep what was downloaded, and say so.
+    void (^keepAndFail)(NSString *, NSArray<NSString *> *, NSArray<NSString *> *) = ^(NSString *why, NSArray<NSString *> *paths, NSArray<NSString *> *names) {
+        dropPartial();
+        for (NSString *kf in paths) {   // a raw TS that couldn't be converted: record what its packets really hold
+            if ([[VGConvert probe:kf][@"container"] isEqualToString:@"mpegts"]) {
+                [ws note:[NSString stringWithFormat:@"[Media] ts scan of %@:\n%@", kf.lastPathComponent, [VGConvert tsScan:kf][@"text"]]];
+                break;
+            }
+        }
+        NSString *kept = [ws keepOriginals:paths labels:names base:base task:task];
+        media([NSString stringWithFormat:@"fallback: %@ | %@", noDot(why), kept ? [@"original kept as " stringByAppendingString:kept] : @"original could not be moved"]);
+        fail(kept ? [NSString stringWithFormat:@"%@. The original download was kept in your Downloads as \u201C%@\u201D.", noDot(why), kept]
+                  : [NSString stringWithFormat:@"%@.", noDot(why)]);
+    };
+    // The checked partial file becomes the final MP4 in one step. Only after that is the task finished,
+    // which is what wipes the work folder holding the originals.
+    void (^install)(void) = ^{
+        NSString *e = nil;
+        NSString *dest = [ws installPartial:partial base:base error:&e];
+        if (!dest) { keepAndFail(cant(e ?: @"couldn't save the finished file"), files, labels); return; }
+        media([@"output: " stringByAppendingString:dest]);
+        store(dest, YES);
+    };
     void (^stageP)(NSString *) = ^(NSString *what) { [ws update:task fraction:share stage:what detail:@""]; };
     void (^(^convertProgress)(NSString *))(double) = ^(NSString *what) {
         return ^(double f) { [ws update:task fraction:share + f * (0.99 - share) stage:what detail:[NSString stringWithFormat:@"%d%% done", (int)(f * 100)]]; };
     };
+    // Second check, with Apple's own reader: it must open, play and show a real picture. Then install.
+    void (^checkAndInstall)(BOOL, void (^)(NSString *)) = ^(BOOL black, void (^onProblem)(NSString *)) {
+        stageP(@"Checking the video");
+        [ws verify:partial black:black completion:^(NSString *problem) {
+            if (problem) { media([@"validation: AVFoundation failed: " stringByAppendingString:problem]); onProblem(problem); return; }
+            media(@"validation: AVFoundation OK");
+            install();
+        }];
+    };
+    void (^logSource)(void) = ^{
+        for (NSString *f in files) {
+            NSDictionary *pr = [VGConvert probe:f];
+            media([NSString stringWithFormat:@"source: %@ | container %@ | video %@ %@x%@ | audio %@ | %@ s | route %@", f.lastPathComponent,
+                   pr[@"container"], pr[@"video"], pr[@"width"], pr[@"height"], pr[@"audio"], pr[@"duration"], kind]);
+        }
+    };
+    void (^logMux)(NSDictionary *, NSString *) = ^(NSDictionary *info, NSString *err) {
+        media([NSString stringWithFormat:@"strategy: %@", info[@"strategy"] ?: @"?"]);
+        media([NSString stringWithFormat:@"result: %@ | timestamp jumps smoothed: %@ | leading packets skipped: %@ | video packets %@ in, %@ out, %@ lost",
+               err ? [@"failed: " stringByAppendingString:noDot(err)] : @"ok", info[@"discontinuities"], info[@"leadingDropped"],
+               info[@"videoIn"], info[@"videoOut"], info[@"videoLost"]]);
+        if ([info[@"gapSeconds"] doubleValue] > 1.0) media([NSString stringWithFormat:@"note: the timeline has %.1f s of gaps (a missing piece of the original)", [info[@"gapSeconds"] doubleValue]]);
+        media([@"validation: native " stringByAppendingString:info[@"validation"] ?: @"?"]);
+    };
+    if (![kind isEqualToString:@"mp3"] && ![kind isEqualToString:@"audio"]) logSource();
 
-    // VP9/VP8 → HEVC (needs an AAC track to copy; make one from the file's own sound if needed).
+    // VP9/VP8 -> HEVC (needs an AAC track to copy; make one from the file's own sound if needed).
     void (^reencode)(NSString *, NSString *) = ^(NSString *videoPath, NSString *audioPath) {
         void (^go)(NSString *) = ^(NSString *aac) {
           if (ws.heavyRunning >= kMaxHeavy) [ws update:task fraction:share stage:@"Waiting to convert" detail:@"Other videos are converting"];
           [ws heavy:task work:^{
-            if ([[VGPython shared] isTaskCancelled:task.identifier]) { [ws heavyDone]; fail(@"Cancelled."); return; }
+            if ([[VGPython shared] isTaskCancelled:task.identifier]) { [ws heavyDone]; dropPartial(); fail(@"Cancelled."); return; }
             stageP(@"Converting for iPhone");
+            media(@"strategy: full video re-encode on the phone's encoder (HEVC, or H.264 on older phones)");
             task.transcoder = [VGTranscoder new];
-            [task.transcoder convertVideo:[NSURL fileURLWithPath:videoPath] audio:aac ? [NSURL fileURLWithPath:aac] : nil to:[NSURL fileURLWithPath:mp4]
-                                 progress:convertProgress(@"Converting for iPhone · keep the app open")
+            [task.transcoder convertVideo:[NSURL fileURLWithPath:videoPath] audio:aac ? [NSURL fileURLWithPath:aac] : nil to:[NSURL fileURLWithPath:partial]
+                                 progress:convertProgress(@"Converting for iPhone \u00B7 keep the app open")
                                completion:^(NSString *err) {
                 [ws heavyDone];
-                if (err) { [ws note:[@"re-encode failed: " stringByAppendingString:err]]; fail(err); return; }
-                stageP(@"Checking the video");
-                [ws verify:mp4 black:YES completion:^(NSString *problem) {
-                    if (!problem) { [ws note:@"re-encode ok"]; store(mp4, YES); return; }
-                    [ws note:[@"re-encode check failed: " stringByAppendingString:problem]];
-                    [fm removeItemAtPath:mp4 error:nil];
-                    fail(@"This quality couldn't be converted on your iPhone (the picture came out blank). Please pick 1080p or lower, and tap Copy details to send the developer what happened.");
-                }];
+                if ([err isEqualToString:@"Cancelled."]) { dropPartial(); fail(err); return; }
+                if (err) { media([@"result: failed: " stringByAppendingString:noDot(err)]); keepAndFail(cant(err), files, labels); return; }
+                checkAndInstall(YES, ^(NSString *problem) {
+                    keepAndFail(@"This quality couldn't be converted on your iPhone (the picture came out blank). Please pick 1080p or lower, and tap Copy details to send the developer what happened", files, labels);
+                });
             }];
           }];
         };
@@ -563,19 +1024,25 @@ static double brightness(CGImageRef img) {
         stageP(@"Preparing sound");
         task.converter = [VGConvert new];
         [task.converter audio:src to:aac mp3:NO title:nil artist:nil progress:nil completion:^(NSString *err) {
-            if (err) { fail(err); return; }
+            if (err) { keepAndFail(cant(err), files, labels); return; }
             go(aac);
         }];
     };
 
-    // A video download that came out with no picture at all: say so instead of saving a black file.
+    // A video download that came out with no picture at all: say so (the sound is kept) instead of saving a black file.
     if (!option.audio && ![kind isEqualToString:@"mp3"] && ![kind isEqualToString:@"audio"] && first) {
         NSString *vfile = first;
         NSDictionary *vp = [VGConvert probe:vfile];
         if ([vp[@"container"] length] && ![vp[@"video"] length]) {   // only when FFmpeg could read the file
             [self note:[NSString stringWithFormat:@"no picture in %@ (%@):\n%@", vfile.lastPathComponent, vp[@"container"], [VGConvert describe:vfile]]];
-            for (NSString *f in files) [fm removeItemAtPath:f error:nil];
-            fail(@"This video came through with sound only, no picture. The site may lock its video so it can't be saved, or it sends picture and sound separately in a way VidGrab can't read yet. Try another quality, and tap Copy details to send the developer the link.");
+            NSDictionary *scan = [vp[@"container"] isEqualToString:@"mpegts"] ? [VGConvert tsScan:vfile] : nil;
+            NSString *why = @"This video came through with sound only, no picture. The site may lock its video so it can't be saved, or it sends picture and sound separately in a way VidGrab can't read yet. Try another quality, and tap Copy details to send the developer the link";
+            if ([scan[@"scrambled"] longValue] > 0) {
+                why = @"This video is encrypted by the site (its data is scrambled), so only some of it can be read and no picture came out. It can't be played or converted";
+            } else if ([scan[@"text"] containsString:@"SAMPLE-AES"]) {
+                why = @"This video is locked with the site's own encryption, so the picture can't be read. It can't be played or converted";
+            }
+            keepAndFail(why, files, labels);
             return;
         }
     }
@@ -584,27 +1051,23 @@ static double brightness(CGImageRef img) {
         stageP(@"Joining video and sound");
         NSString *vPath = files[0], *aPath = files[1];
         void (^appleBackup)(NSString *) = ^(NSString *why) {
-            [ws note:[@"join: FFmpeg route failed, trying Apple's: " stringByAppendingString:why]];
-            [fm removeItemAtPath:mp4 error:nil];
-            [ws mergeVideo:[NSURL fileURLWithPath:vPath] audio:[NSURL fileURLWithPath:aPath] to:[NSURL fileURLWithPath:mp4] task:task completion:^(NSString *err) {
-                if (err) { [ws note:[@"join: Apple's route failed: " stringByAppendingString:err]]; fail(err); return; }
-                [ws verify:mp4 black:NO completion:^(NSString *problem) {
-                    if (!problem) { [ws note:@"join ok (Apple)"]; store(mp4, YES); return; }
-                    [ws note:[@"join: Apple's result failed check: " stringByAppendingString:problem]];
-                    [fm removeItemAtPath:mp4 error:nil];
-                    fail(@"The video and sound couldn't be joined into a playable file. Tap Copy details and send them to the developer.");
-                }];
+            media([@"fallback: FFmpeg route failed (" stringByAppendingString:[noDot(why) stringByAppendingString:@"), trying Apple's join"]]);
+            dropPartial();
+            [ws mergeVideo:[NSURL fileURLWithPath:vPath] audio:[NSURL fileURLWithPath:aPath] to:[NSURL fileURLWithPath:partial] task:task completion:^(NSString *err) {
+                if ([err isEqualToString:@"Cancelled."]) { dropPartial(); fail(err); return; }
+                if (err) { keepAndFail(cant(err), files, labels); return; }
+                checkAndInstall(NO, ^(NSString *problem) {
+                    keepAndFail(@"The video and sound couldn't be joined into a playable file. Tap Copy details and send them to the developer", files, labels);
+                });
             }];
         };
         task.converter = [VGConvert new];
-        [task.converter merge:vPath audio:aPath to:mp4 progress:convertProgress(@"Joining video and sound") completion:^(NSString *err) {
-            if ([err isEqualToString:@"Cancelled."]) { fail(err); return; }
+        [task.converter mux:vPath audio:aPath to:partial progress:convertProgress(@"Joining video and sound")
+                 completion:^(NSString *err, NSDictionary *info) {
+            logMux(info, err);
+            if ([err isEqualToString:@"Cancelled."]) { dropPartial(); fail(err); return; }
             if (err) { appleBackup(err); return; }
-            stageP(@"Checking the video");
-            [ws verify:mp4 black:NO completion:^(NSString *problem) {
-                if (!problem) { [ws note:@"join ok (FFmpeg)"]; store(mp4, YES); return; }
-                appleBackup(problem);
-            }];
+            checkAndInstall(NO, appleBackup);
         }];
     } else if ([kind isEqualToString:@"convert"]) {
         reencode(files[0], files.count >= 2 ? files[1] : nil);
@@ -628,37 +1091,45 @@ static double brightness(CGImageRef img) {
     } else {
         // A single video file: make it an MP4 that Photos accepts, whatever it arrived as.
         NSDictionary *p = [VGConvert probe:first];
-        NSString *vc = p[@"video"], *ac = p[@"audio"], *container = p[@"container"];
+        NSString *vc = p[@"video"], *container = p[@"container"];
         BOOL appleCodec = [vc isEqualToString:@"h264"] || [vc isEqualToString:@"hevc"];
         if (appleCodec) {
             BOOL isMP4 = [container hasPrefix:@"mov"];
             NSString *what = isMP4 ? @"Finishing up" : [NSString stringWithFormat:@"Converting %@ to MP4", [first.pathExtension uppercaseString] ?: @"video"];
             stageP(what);
+            // An MP4 that already is a playable MP4 can simply stay as it is if rebuilding it doesn't work out.
+            void (^useOriginal)(NSString *) = ^(NSString *why) {
+                [ws verify:first black:NO completion:^(NSString *problem) {
+                    if (problem) { keepAndFail(cant(why), files, labels); return; }
+                    media(@"fallback: keeping the original MP4 as it is (it plays fine)");
+                    NSString *ext = first.pathExtension.lowercaseString.length ? first.pathExtension.lowercaseString : @"mp4";
+                    NSString *dest = [documentsDir() stringByAppendingPathComponent:[ws uniqueName:base ext:ext]];
+                    NSError *e = nil;
+                    [fm moveItemAtPath:first toPath:dest error:&e];
+                    if (e) keepAndFail(cant(e.localizedDescription), files, labels); else store(dest, NO);
+                }];
+            };
             void (^backup)(NSString *) = ^(NSString *why) {
-                [ws note:[NSString stringWithFormat:@"repackage (%@ %@/%@) failed: %@", container, vc, ac, why]];
-                [fm removeItemAtPath:mp4 error:nil];
-                if (!isMP4) { keepOriginal(); return; }   // keep the original so nothing is lost
-                [ws remux:[NSURL fileURLWithPath:first] to:[NSURL fileURLWithPath:mp4] task:task completion:^(NSString *err) {
-                    [ws verify:mp4 black:NO completion:^(NSString *problem) {
-                        if (!err && !problem) { [ws note:@"repackage ok (Apple)"]; store(mp4, YES); return; }
-                        [fm removeItemAtPath:mp4 error:nil];
-                        keepOriginal();
-                    }];
+                dropPartial();
+                if (!isMP4) { keepAndFail(cant(why), files, labels); return; }   // Apple's exporter can't read TS, MKV or FLV
+                media(@"fallback: trying Apple's repackager");
+                [ws remux:[NSURL fileURLWithPath:first] to:[NSURL fileURLWithPath:partial] task:task completion:^(NSString *err) {
+                    if (err) { dropPartial(); useOriginal(err); return; }
+                    checkAndInstall(NO, ^(NSString *problem) { dropPartial(); useOriginal(problem); });
                 }];
             };
             task.converter = [VGConvert new];
-            [task.converter remux:first to:mp4 progress:convertProgress(what) completion:^(NSString *err) {
-                if ([err isEqualToString:@"Cancelled."]) { fail(err); return; }
+            [task.converter mux:first audio:nil to:partial progress:convertProgress(what) completion:^(NSString *err, NSDictionary *info) {
+                logMux(info, err);
+                if ([err isEqualToString:@"Cancelled."]) { dropPartial(); fail(err); return; }
                 if (err) { backup(err); return; }
-                [ws verify:mp4 black:NO completion:^(NSString *problem) {
-                    if (!problem) { [ws note:@"repackage ok (FFmpeg)"]; store(mp4, YES); return; }
-                    backup(problem);
-                }];
+                checkAndInstall(NO, backup);
             }];
         } else if ([vc isEqualToString:@"vp9"] || [vc isEqualToString:@"vp8"]) {
             reencode(first, nil);
         } else {
-            keepOriginal();
+            // A picture VidGrab can't put in an MP4 (MPEG-2 and others): keep the file, say what it was.
+            keepAndFail(vc.length ? [NSString stringWithFormat:@"VidGrab can't convert %@ video yet", vc] : @"VidGrab can't read this kind of file", files, labels);
         }
     }
 }
@@ -879,6 +1350,70 @@ static NSString *fourCC(FourCharCode c) {
         // Passthrough can fail on unusual files; re-encode as a fallback (slower).
         [self export:comp to:dest preset:AVAssetExportPresetHighestQuality task:task completion:completion];
     }];
+}
+
+#pragma mark Importing
+
+/// A short "1080p" / "4K" label (with "60fps" when it is fast), like the ones on downloads.
+static NSString *resolutionLabel(AVAssetTrack *track) {
+    CGSize sz = CGSizeApplyAffineTransform(track.naturalSize, track.preferredTransform);
+    int side = (int)round(MIN(fabs(sz.width), fabs(sz.height)));   // the short side, so tall phone videos read the same way
+    NSString *r = side >= 2000 ? @"4K" : side >= 1300 ? @"1440p" : side >= 900 ? @"1080p" : side >= 600 ? @"720p"
+                : side >= 420 ? @"480p" : side >= 300 ? @"360p" : [NSString stringWithFormat:@"%dp", side];
+    if (track.nominalFrameRate >= 50) r = [r stringByAppendingFormat:@" %dfps", (int)round(track.nominalFrameRate)];
+    return r;
+}
+
+- (void)importFileAtURL:(NSURL *)url title:(NSString *)title source:(NSString *)source move:(BOOL)move
+             completion:(void (^)(VGItem *, NSString *))completion {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    void (^finish)(VGItem *, NSString *) = ^(VGItem *item, NSString *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (item) { [self.library insertObject:item atIndex:0]; [self saveLibrary]; }
+            if (completion) completion(item, err);
+        });
+    };
+
+    NSString *ext = url.pathExtension.lowercaseString;
+    NSString *base = title.length ? title : [url.lastPathComponent stringByDeletingPathExtension];
+    for (NSString *bad in @[@"/", @":", @"\\"]) base = [base stringByReplacingOccurrencesOfString:bad withString:@"-"];
+    base = [base stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (base.length > 120) base = [base substringToIndex:120];
+    if (!base.length) base = @"Imported video";
+    NSString *shownName = [NSString stringWithFormat:@"\u201C%@\u201D", base];
+
+    // Only what the iPhone can play: the player has to be able to open it.
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
+    AVAssetTrack *video = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+    BOOL hasAudio = [asset tracksWithMediaType:AVMediaTypeAudio].count > 0;
+    if (!asset.isPlayable || (!video && !hasAudio)) {
+        finish(nil, [NSString stringWithFormat:@"%@ can't be played on iPhone%@.", shownName, ext.length ? [NSString stringWithFormat:@" (%@ files aren't supported)", ext.uppercaseString] : @""]);
+        return;
+    }
+    if (!ext.length) ext = video ? @"mp4" : @"m4a";
+
+    NSString *dest = [documentsDir() stringByAppendingPathComponent:[self uniqueName:base ext:ext]];
+    NSError *err = nil;
+    BOOL ok = move ? [fm moveItemAtURL:url toURL:[NSURL fileURLWithPath:dest] error:&err] : NO;
+    if (!ok) { err = nil; ok = [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:dest] error:&err]; }
+    if (!ok) {
+        finish(nil, [NSString stringWithFormat:@"Couldn't add %@: %@", shownName, err.localizedDescription ?: @"not enough space?"]);
+        return;
+    }
+
+    VGItem *item = [VGItem new];
+    item.fileName = dest.lastPathComponent;
+    item.title = base;
+    item.site = source;
+    item.audio = video == nil;
+    item.res = video ? resolutionLabel(video) : @"Audio";
+    double d = CMTimeGetSeconds(asset.duration);
+    item.duration = isfinite(d) && d > 0 ? d : 0;
+    item.photos = video != nil && UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(dest);
+    item.date = [NSDate date];
+    item.bytes = [[fm attributesOfItemAtPath:dest error:nil][NSFileSize] longLongValue];
+    [self makeThumbnailFor:item fallbackURL:nil];
+    finish(item, nil);
 }
 
 - (void)makeThumbnailFor:(VGItem *)item fallbackURL:(NSString *)remote {

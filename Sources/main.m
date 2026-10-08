@@ -9,6 +9,9 @@
 #import "VGProgressPill.h"
 #import "VGCrash.h"
 #import "VGCache.h"
+#import "VGKeepAlive.h"
+#import "VGOverlay.h"
+#import "VGActions.h"
 
 @interface VGAppDelegate : UIResponder <UIApplicationDelegate, UITabBarControllerDelegate>
 @property (nonatomic, strong) UIWindow *window;
@@ -54,6 +57,8 @@
     [VGCrash breadcrumb:@"launch"];
     if (VGCache.autoClearOnLaunch) [VGCache clear:nil];   // Settings > Auto-clear cache on launch
     [[VGEngine shared] start];
+    [VGKeepAlive start];
+    [VGOverlay start];
     // The ad blocker gets ready when Browse is first opened, not at launch.
     [self applyAppearance];
 
@@ -94,15 +99,15 @@
 
     // Download progress, visible on Home and Downloads (Browse shows it on its own button).
     self.tabs.delegate = self;
+    // A round bubble you can drag anywhere; it snaps to the nearest side and remembers its spot.
     self.pill = [VGProgressPill new];
-    self.pill.translatesAutoresizingMaskIntoConstraints = NO;
     [self.pill addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
     [self.tabs.view addSubview:self.pill];
-    [NSLayoutConstraint activateConstraints:@[
-        [self.pill.trailingAnchor constraintEqualToAnchor:self.tabs.view.trailingAnchor constant:-16],
-        // Above the tab bar (49 pt tall above the home indicator), anchored to the screen's safe area.
-        [self.pill.bottomAnchor constraintEqualToAnchor:self.tabs.view.safeAreaLayoutGuide.bottomAnchor constant:-63],
-    ]];
+    // Downloads > Select shows its own action bar where the bubble sits, so step aside.
+    [NSNotificationCenter.defaultCenter addObserverForName:@"VGSelectModeDidChange" object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) {
+        self.pill.suppressed = [n.object boolValue] || self.tabs.selectedIndex == 1;
+    }];
     [VGCrash breadcrumb:@"window ready"];
     return YES;
 }
@@ -117,8 +122,22 @@
     self.pill.suppressed = tc.selectedIndex == 1;  // the browser has its own progress button
 }
 
+// The app stays upright, except while the video player is showing.
+- (UIInterfaceOrientationMask)application:(UIApplication *)app supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) return UIInterfaceOrientationMaskAll;
+    return VGPlayerIsOnScreen() ? UIInterfaceOrientationMaskAllButUpsideDown : UIInterfaceOrientationMaskPortrait;
+}
+
 // vidgrab://download?url=<encoded link>  (for Shortcuts and share-sheet automations)
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)options {
+    // vidgrab://downloads  (tapping the floating bubble over another app)
+    if ([url.host isEqualToString:@"downloads"]) {
+        UIViewController *shown = self.tabs.presentedViewController;
+        if (shown && ![shown isKindOfClass:NSClassFromString(@"VGPlayerViewController")]) [shown dismissViewControllerAnimated:NO completion:nil];
+        self.tabs.selectedIndex = 2;
+        self.pill.suppressed = NO;
+        return YES;
+    }
     NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     NSString *link = nil;
     for (NSURLQueryItem *q in c.queryItems) if ([q.name isEqualToString:@"url"]) link = q.value;

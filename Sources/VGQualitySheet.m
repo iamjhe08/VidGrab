@@ -21,7 +21,10 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 @property (nonatomic, strong) UILabel *errorLabel, *caption, *stageLabel, *percentLabel, *detailLabel, *doneSub;
 @property (nonatomic, strong) UICollectionView *list;
 @property (nonatomic, strong) VGProgressBar *bar;
-@property (nonatomic, strong) UIButton *photosButton, *shareButton;
+@property (nonatomic, strong) UIButton *photosButton, *shareButton, *linkCopyButton, *othersButton;
+@property (nonatomic) BOOL usingCandidates;
+@property (nonatomic, copy) NSString *pageError;
+@property (nonatomic) NSInteger candidateIndex;
 @end
 
 @implementation VGQualitySheet
@@ -168,7 +171,15 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
     [dl addTarget:self action:@selector(download) forControlEvents:UIControlEventTouchUpInside];
     self.caption = [self label:VGFont(13, UIFontWeightMedium) color:VGTertiary lines:0];
     self.caption.textAlignment = NSTextAlignmentCenter;
-    self.pickView = [self vstack:@[[self inset:h], self.list, [self inset:[self vstack:@[dl, self.caption] spacing:10]]] spacing:12];
+    self.linkCopyButton = VGSecondaryButton(@"Copy direct link", @"link");
+    [self.linkCopyButton addTarget:self action:@selector(copyDirectLink) forControlEvents:UIControlEventTouchUpInside];
+    self.othersButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.othersButton setTitle:@"Not this one? See other videos on this page" forState:UIControlStateNormal];
+    self.othersButton.titleLabel.font = VGFont(14, UIFontWeightSemibold);
+    self.othersButton.tintColor = VGSecondary;
+    self.othersButton.hidden = YES;
+    [self.othersButton addTarget:self action:@selector(showCandidateList) forControlEvents:UIControlEventTouchUpInside];
+    self.pickView = [self vstack:@[[self inset:h], self.list, [self inset:[self vstack:@[dl, self.linkCopyButton, self.caption, self.othersButton] spacing:10]]] spacing:12];
 }
 
 - (void)buildProgress {
@@ -221,17 +232,33 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 
 #pragma mark Flow
 
-- (void)lookUp:(NSString *)url {
-    [[VGEngine shared] fetch:url completion:^(VGVideo *video, NSString *error) {
+- (void)lookUp:(NSString *)url { [self lookUp:url extra:nil]; }
+
+/// A stream the browser caught is looked up with the request details it saw (extra); anything else is a normal lookup.
+- (void)lookUp:(NSString *)url extra:(NSDictionary *)extra {
+    [[VGEngine shared] fetch:url extra:extra completion:^(VGVideo *video, NSString *error) {
         if (!video) {
-            // The page link failed; try the video's own address if the page gave us one.
-            if (self.fallback.length && ![url isEqualToString:self.fallback]) { [self lookUp:self.fallback]; return; }
+            if (extra && self.usingCandidates && self.candidateIndex + 1 < (NSInteger)self.candidates.count) {
+                [self tryCandidateAt:self.candidateIndex + 1];
+                return;
+            }
+            if (!extra) {
+                // The page link failed; try the video's own address if the page gave us one.
+                if (self.fallback.length && ![url isEqualToString:self.fallback]) { [self lookUp:self.fallback]; return; }
+                // Then the streams the browser saw while the page played.
+                if (self.candidates.count) { [self offerCandidates:error]; return; }
+            }
             self.titleLabel.text = @"Couldn't find a video";
-            self.errorLabel.text = error;
+            NSString *msg = error ?: @"Something went wrong.";
+            if (self.fromBrowser && !self.candidates.count && !extra && [msg containsString:@"isn't supported"]) {
+                msg = [msg stringByAppendingString:@"\n\nTip: some sites only reveal the video once it plays. Press play on the page, wait a few seconds, then tap Download again."];
+            }
+            self.errorLabel.text = msg;
             [self setState:VGSheetError];
             return;
         }
         self.video = video;
+        self.othersButton.hidden = !(extra && self.usingCandidates && self.candidates.count > 1);
         self.titleLabel.text = video.title;
         NSMutableArray *meta = [NSMutableArray array];
         if (video.site) [meta addObject:video.site];
@@ -259,8 +286,44 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 }
 
 - (void)retry {
+    self.usingCandidates = NO;
     [self setState:VGSheetLoading];
     [self lookUp:self.url];
+}
+
+/// The page link didn't work, but the browser saw video streams while it played. One stream is tried straight away;
+/// several are offered by name, since a page can also load ads or previews.
+/// The page link itself wasn't enough, so the videos the page played are tried in order (streams first). The first one that works shows
+/// its qualities right away; "See other videos on this page" lets you choose another.
+- (void)offerCandidates:(NSString *)pageError {
+    self.usingCandidates = YES;
+    self.pageError = pageError;
+    [self tryCandidateAt:0];
+}
+
+- (void)tryCandidateAt:(NSInteger)i {
+    if (i < 0 || i >= (NSInteger)self.candidates.count) return;
+    self.candidateIndex = i;
+    NSDictionary *c = self.candidates[i];
+    [self setState:VGSheetLoading];
+    self.titleLabel.text = @"Looking up the video…";
+    [self lookUp:c[@"url"] extra:c];
+}
+
+- (void)showCandidateList {
+    __weak typeof(self) ws = self;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Videos found on this page"
+                                                               message:@"Pick the one you want."
+                                                        preferredStyle:UIAlertControllerStyleActionSheet];
+    [self.candidates enumerateObjectsUsingBlock:^(NSDictionary *c, NSUInteger idx, BOOL *stop) {
+        NSString *t = c[@"label"] ?: c[@"url"];
+        if ((NSInteger)idx == ws.candidateIndex) t = [@"✓ " stringByAppendingString:t];
+        [a addAction:[UIAlertAction actionWithTitle:t style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [ws tryCandidateAt:(NSInteger)idx]; }]];
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = self.othersButton;
+    a.popoverPresentationController.sourceRect = self.othersButton.bounds;
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)copyDetails {
@@ -305,6 +368,46 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
         ws.photosButton.hidden = !item.photos;
         [ws setState:VGSheetDone];
         [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+    }];
+}
+
+/// Shows every link we can find for the picked option, so each one can be copied and tried.
+- (void)copyDirectLink {
+    if (!self.video) return;
+    VGOption *opt = (NSUInteger)self.selected < self.video.options.count ? self.video.options[self.selected] : nil;
+    self.linkCopyButton.enabled = NO;
+    __weak typeof(self) ws = self;
+    [[VGEngine shared] linkListFor:self.video option:opt completion:^(NSDictionary *info, NSString *error) {
+        ws.linkCopyButton.enabled = YES;
+        NSMutableArray *rows = [NSMutableArray array];
+        NSMutableSet *seen = [NSMutableSet set];
+        for (NSDictionary *e in ([info[@"items"] isKindOfClass:NSArray.class] ? info[@"items"] : @[])) {
+            NSString *u = e[@"url"];
+            if (![u isKindOfClass:NSString.class] || [seen containsObject:u]) continue;
+            [seen addObject:u];
+            [rows addObject:@{@"label": e[@"label"] ?: u, @"url": u}];
+        }
+        for (NSDictionary *c in ws.candidates) {
+            NSString *u = c[@"url"];
+            if (![u isKindOfClass:NSString.class] || [seen containsObject:u]) continue;
+            [seen addObject:u];
+            [rows addObject:@{@"label": [@"Seen on the page · " stringByAppendingString:c[@"label"] ?: u.lastPathComponent], @"url": u}];
+        }
+        if (!rows.count) { [VGActions toast:@"Couldn't find a direct link" icon:@"exclamationmark.circle" in:ws.view]; return; }
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Copy a link"
+                                                                   message:@"Tap one to copy it. If it doesn't play, try the next."
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+        for (NSDictionary *r in rows) {
+            [a addAction:[UIAlertAction actionWithTitle:r[@"label"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+                UIPasteboard.generalPasteboard.string = r[@"url"];
+                [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+                [VGActions toast:@"Link copied" icon:@"link" in:ws.view];
+            }]];
+        }
+        [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        a.popoverPresentationController.sourceView = ws.linkCopyButton;
+        a.popoverPresentationController.sourceRect = ws.linkCopyButton.bounds;
+        [ws presentViewController:a animated:YES completion:nil];
     }];
 }
 

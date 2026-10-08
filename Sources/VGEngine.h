@@ -20,6 +20,22 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *thumbnail;
 @property (nonatomic) double duration;
 @property (nonatomic, copy) NSArray<VGOption *> *options;
+/// For a stream the in-app browser caught while a page played: the request details (Referer, browser name, kind) as JSON.
+@property (nonatomic, copy, nullable) NSString *extra;
+/// Set when the link is a playlist or channel: its videos (url, title, duration, thumbnail only).
+@property (nonatomic, copy, nullable) NSArray<VGVideo *> *entries;
+@property (nonatomic, readonly) BOOL isPlaylist;
+@end
+
+/// A folder the user made in Downloads to sort videos. Folders only live inside VidGrab (the files themselves stay put).
+@interface VGFolder : NSObject
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy) NSString *name;
+/// "RRGGBB"
+@property (nonatomic, copy) NSString *colorHex;
+@property (nonatomic, strong) NSDate *date;
+@property (nonatomic, readonly) UIColor *color;
++ (NSString *)hexFromColor:(UIColor *)color;
 @end
 
 /// A finished download stored in the app's Documents folder.
@@ -33,6 +49,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL audio;
 @property (nonatomic) BOOL photos;
 @property (nonatomic, strong) NSDate *date;
+/// In the Private Vault: hidden from the main list and kept out of the Files app.
+@property (nonatomic) BOOL vault;
+/// The identifier of the folder this video was sorted into, nil when it sits loose in Downloads.
+@property (nonatomic, copy, nullable) NSString *folderID;
 @property (nonatomic, readonly) NSURL *fileURL;
 @property (nonatomic, readonly, nullable) UIImage *thumbnailImage;
 @end
@@ -64,17 +84,27 @@ extern NSString *const VGTasksDidChangeNotification;
 extern NSString *const VGTaskFinishedNotification;
 
 @interface VGEngine : NSObject
++ (BOOL)hasUnfinishedDownloads;
 + (instancetype)shared;
 @property (nonatomic, readonly) NSArray<VGItem *> *items;
 /// Queued, running and failed downloads, oldest first.
 @property (nonatomic, readonly) NSArray<VGTask *> *tasks;
 /// Downloads still to finish (queued + running).
 @property (nonatomic, readonly) NSUInteger activeCount;
+/// YES when downloads were cut off and are waiting to resume (saved on disk).
++ (BOOL)hasUnfinished;
 /// The first running download, for compact progress displays.
 @property (nonatomic, readonly, nullable) VGTask *leadTask;
 
 - (void)start;
 - (void)fetch:(NSString *)url completion:(void (^)(VGVideo *_Nullable video, NSString *_Nullable error))completion;
+/// Same, for a stream link the browser caught: `extra` carries "headers", "kind" (hls, dash or file), "title" and "page".
+- (void)fetch:(NSString *)url extra:(nullable NSDictionary *)extra completion:(void (^)(VGVideo *_Nullable video, NSString *_Nullable error))completion;
+/// Finds links the built-in player can play right away. Result: items (url + headers), hls, audio, height.
+- (void)streamLinkFor:(VGVideo *)video option:(nullable VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
+/// The link(s) a download of this option fetches (same lookup and same pick as the download). Result: items (url + headers), hls.
+- (void)linkListFor:(VGVideo *)video option:(nullable VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
+- (void)directLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
 /// Adds a download to the queue (2 run at a time) and returns it.
 - (VGTask *)download:(VGVideo *)video
               option:(VGOption *)option
@@ -84,6 +114,25 @@ extern NSString *const VGTaskFinishedNotification;
 - (void)retryTask:(VGTask *)task;
 - (void)dismissTask:(VGTask *)task;
 - (void)deleteItem:(VGItem *)item;
+/// Adds a video or audio file picked from Photos or Files to the library (it is copied, or moved when `move` is YES).
+/// Does its work on the calling thread, so call it off the main queue. The completion runs on the main queue.
+- (void)importFileAtURL:(NSURL *)url title:(nullable NSString *)title source:(NSString *)source move:(BOOL)move
+             completion:(void (^)(VGItem *_Nullable item, NSString *_Nullable error))completion;
+/// Folders, newest last.
+@property (nonatomic, readonly) NSArray<VGFolder *> *folders;
+- (nullable VGFolder *)folderWithID:(nullable NSString *)identifier;
+- (VGFolder *)createFolderNamed:(NSString *)name colorHex:(NSString *)hex;
+- (void)updateFolder:(VGFolder *)folder name:(NSString *)name colorHex:(NSString *)hex;
+/// Removes the folder only. Its videos go back to the main Downloads list.
+- (void)deleteFolder:(VGFolder *)folder;
+/// Puts videos in a folder, or back in the main list when `folder` is nil. Videos in the Private Vault are skipped.
+- (void)setItems:(NSArray<VGItem *> *)items folder:(nullable VGFolder *)folder;
+- (NSArray<VGItem *> *)itemsInFolder:(VGFolder *)folder;
+/// Moves a download into or out of the Private Vault.
+- (void)setItem:(VGItem *)item inVault:(BOOL)vault;
+/// A queue-ready option for playlist downloads: the engine picks each video's own best match.
+/// quality: @"best", @"1080", @"720", @"480" or @"mp3".
++ (VGOption *)presetOption:(NSString *)quality;
 /// A plain-text report on a downloaded file (codecs, tracks, whether iPhone can play it, picture brightness).
 - (void)diagnose:(VGItem *)item completion:(void (^)(NSString *report))completion;
 /// Rebuilds a video with Apple's own encoder (slow) as a rescue for files that won't play right.

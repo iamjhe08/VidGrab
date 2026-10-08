@@ -11,13 +11,16 @@
 + (NSArray<NSString *> *)paths {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSMutableArray *out = [NSMutableArray array];
+    BOOL busy = [VGEngine shared].activeCount > 0 || [VGEngine hasUnfinished];   // downloads that are running or waiting to resume are left alone
     NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    BOOL keepEngine = [VGEngine hasUnfinishedDownloads];   // unfinished downloads carry on from their saved files
     for (NSString *n in [fm contentsOfDirectoryAtPath:caches error:nil]) {
+        if (keepEngine && [n isEqualToString:@"ytdlp-cache"]) continue;
         if ([n containsString:@"WebKit"] || [n hasPrefix:@"com.apple"] || [n isEqualToString:@"Snapshots"]) continue;
+        if (busy && [n isEqualToString:@"ytdlp-cache"]) continue;
         [out addObject:[caches stringByAppendingPathComponent:n]];
     }
     NSString *tmp = NSTemporaryDirectory();
-    BOOL busy = [VGEngine shared].activeCount > 0;
     for (NSString *n in [fm contentsOfDirectoryAtPath:tmp error:nil]) {
         if (busy && [n isEqualToString:@"work"]) continue;   // running downloads use this
         if ([n containsString:@"WebKit"]) continue;
