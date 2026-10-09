@@ -22,11 +22,14 @@
 // How VidGrab talks to the bubble: Darwin notifications plus one 64-bit state value,
 // which works even though the app itself is sandboxed.
 //   bits 0-15 downloads left, 16-31 progress (0-1000), 32 waiting, 33-40 saved, 41-48 failed, 49 sample
+#include <errno.h>
 #define N_STATE  "com.t4mag0.vidgrab.hud.state"
 #define N_UPDATE "com.t4mag0.vidgrab.hud.update"
 #define N_HIDE   "com.t4mag0.vidgrab.hud.exit"
 #define N_PID    "com.t4mag0.vidgrab.hud.pid"
 #define N_ALIVE  "com.t4mag0.vidgrab.hud.alive"
+#define N_HUDPID "com.t4mag0.vidgrab.hud.hudpid"
+#define N_DIAG   "com.t4mag0.vidgrab.hud.diag"
 
 static BOOL gDaemon;        // started by the jailbreak at boot, stays running and hides when idle
 static pid_t gAppPid;       // spawn mode: the VidGrab that started us
@@ -56,6 +59,13 @@ static void WriteState(const char *name, uint64_t v) {
     else { notify_register_check(name, &t); tokens[k] = @(t); }
     notify_set_state(t, v);
     notify_post(name);
+}
+
+// What the bubble has done so far, for Settings > Test bubble: window id, how many times it was shown, last count it saw.
+static uint32_t gCtxId;
+static unsigned gAppears, gLastN, gRegs;
+static void WriteDiag(void) {
+    WriteState(N_DIAG, (1ULL << 63) | (uint64_t)gCtxId | ((uint64_t)MIN(gAppears, 255u) << 32) | ((uint64_t)MIN(gLastN, 255u) << 40));
 }
 
 static UIColor *Hex(unsigned h, CGFloat a) {
@@ -129,6 +139,25 @@ static void HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service
 #pragma mark - Bubble
 
 static const CGFloat kSize = 60;
+
+// Tell SpringBoard to show our window above everything. Done again every few seconds while the bubble
+// is up, because SpringBoard forgets it after a respring or if it was not ready when the service started.
+static id gHosting;
+static void RegisterHostedWindow(UIWindow *w) {
+    if (!w) return;
+    Class c = objc_getClass("SBSAccessibilityWindowHostingController");
+    if (!c) return;
+    gHosting = [[c alloc] init];
+    unsigned int ctx = [w _contextId];
+    double level = w.windowLevel;
+    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:"v@:Id"];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = gHosting;
+    inv.selector = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
+    [inv setArgument:&ctx atIndex:2];
+    [inv setArgument:&level atIndex:3];
+    [inv invoke];
+}
 
 @interface VGHUDController : UIViewController
 @property (nonatomic, strong) UIView *bubble;
@@ -314,6 +343,7 @@ static const CGFloat kSize = 60;
 - (void)appear {
     if (self.active) return;
     self.active = YES;
+    gAppears++; WriteDiag();
     self.finishing = NO;
     self.arc.strokeColor = Hex(0xFF3D68, 1).CGColor;
     self.icon.frame = CGRectMake(0, 13, kSize, 12);
@@ -325,7 +355,16 @@ static const CGFloat kSize = 60;
     [UIView animateWithDuration:0.4 delay:0 usingSpringWithDamping:0.65 initialSpringVelocity:0.6 options:0
                      animations:^{ self.bubble.alpha = 1; self.bubble.transform = CGAffineTransformIdentity; } completion:nil];
     [self scheduleDim];
+    [self reregister];
     HUDLog(@"bubble shown");
+}
+
+- (void)reregister {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(reregister) object:nil];
+    if (!self.active) return;
+    RegisterHostedWindow(self.view.window);
+    gRegs++; WriteDiag();
+    [self performSelector:@selector(reregister) withObject:nil afterDelay:(gRegs < 4 ? 0.7 : 5.0)];
 }
 
 - (void)hide {
@@ -333,6 +372,7 @@ static const CGFloat kSize = 60;
     self.finishing = NO;   // ready for the next download
     if (!self.active) { if (!gDaemon) exit(0); return; }
     self.active = NO;
+    if (!gDaemon) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!self.active) exit(0); });   // never linger
     [UIView animateWithDuration:FADE_OUT_DURATION animations:^{ self.bubble.alpha = 0; self.bubble.transform = CGAffineTransformMakeScale(0.6, 0.6); }
                      completion:^(BOOL f) {
         if (self.active) return;
@@ -356,6 +396,7 @@ static const CGFloat kSize = 60;
 - (void)reload {
     uint64_t v = ReadState(N_STATE);
     NSInteger n = (NSInteger)(v & 0xFFFF);
+    if ((unsigned)n != gLastN) { gLastN = (unsigned)n; WriteDiag(); }
     double f = ((v >> 16) & 0xFFFF) / 1000.0;
     BOOL waiting = (v >> 32) & 1;
     NSInteger saved = (v >> 33) & 0xFF, failed = (v >> 41) & 0xFF;
@@ -414,16 +455,9 @@ static const CGFloat kSize = 60;
     self.window.hidden = NO;
     [self.window makeKeyAndVisible];
 
-    self.hosting = [[objc_getClass("SBSAccessibilityWindowHostingController") alloc] init];
     unsigned int ctx = [self.window _contextId];
-    double level = self.window.windowLevel;
-    NSMethodSignature *sig = [NSMethodSignature signatureWithObjCTypes:"v@:Id"];
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = self.hosting;
-    inv.selector = NSSelectorFromString(@"registerWindowWithContextID:atLevel:");
-    [inv setArgument:&ctx atIndex:2];
-    [inv setArgument:&level atIndex:3];
-    [inv invoke];
+    RegisterHostedWindow(self.window);
+    gCtxId = ctx; WriteDiag();
     HUDLog([NSString stringWithFormat:@"window on screen (context %u)", ctx]);
     return YES;
 }
@@ -436,6 +470,11 @@ int main(int argc, char *argv[]) {
         if (!gDaemon && strcmp(argv[1], "-hud") != 0) return 1;
         gAppPid = (!gDaemon && argc > 2) ? (pid_t)atoi(argv[2]) : 0;
         signal(SIGPIPE, SIG_IGN);
+        {   // only one bubble service at a time (a second copy would draw a second bubble on top of the first)
+            pid_t other = (pid_t)ReadState(N_HUDPID);
+            if (other > 0 && other != getpid() && (kill(other, 0) == 0 || errno == EPERM)) { HUDLog(@"another bubble service is already running; exiting"); return 0; }
+        }
+        WriteState(N_HUDPID, (uint64_t)getpid());
         HUDLog([NSString stringWithFormat:@"started (%s) as user %d", gDaemon ? "service" : "helper", getuid()]);
 
         [UIScreen initialize];
