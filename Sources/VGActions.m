@@ -120,8 +120,20 @@
     [[self top:vc] presentViewController:a animated:YES completion:nil];
 }
 
-+ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view {
+static __weak UIView *gToast;
+
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view { [self toast:text icon:icon in:view bottom:70]; }
+
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view bottom:(CGFloat)bottom { [self toast:text icon:icon in:view bottom:bottom top:-1]; }
+
+/// top >= 0 puts the message that far below the top edge (top centre) instead of above the bottom edge.
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view top:(CGFloat)top { [self toast:text icon:icon in:view bottom:70 top:top]; }
+
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view bottom:(CGFloat)bottom top:(CGFloat)top {
     if (!view) return;
+    // A new message replaces the one still showing, so two never pile up on top of each other.
+    UIView *old = gToast;
+    if (old) { gToast = nil; [old.layer removeAllAnimations]; [old removeFromSuperview]; }   // gone at once: a fading copy used to stay on screen under the new one
     UIView *pill = [UIView new];
     pill.backgroundColor = [VGSurface2 colorWithAlphaComponent:0.97];
     pill.layer.cornerRadius = 22;
@@ -141,20 +153,26 @@
     s.translatesAutoresizingMaskIntoConstraints = NO;
     [pill addSubview:s];
     [view addSubview:pill];
+    gToast = pill;
+    l.adjustsFontSizeToFitWidth = YES; l.minimumScaleFactor = 0.75;
     [NSLayoutConstraint activateConstraints:@[
+        [pill.widthAnchor constraintLessThanOrEqualToAnchor:view.widthAnchor constant:-24],
         [s.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:18],
         [s.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-18],
         [s.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
         [pill.heightAnchor constraintEqualToConstant:44],
         [pill.centerXAnchor constraintEqualToAnchor:view.centerXAnchor],
-        [pill.bottomAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.bottomAnchor constant:-70],
+        top >= 0 ? [pill.topAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.topAnchor constant:top]
+                 : [pill.bottomAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.bottomAnchor constant:-bottom],
     ]];
+    // Place it before animating: otherwise the first layout happens inside the animation and the pill flies in from the corner.
+    [view layoutIfNeeded];
     pill.alpha = 0;
-    pill.transform = CGAffineTransformMakeTranslation(0, 12);
+    pill.transform = CGAffineTransformMakeTranslation(0, top >= 0 ? -12 : 12);
     [UIView animateWithDuration:0.25 animations:^{ pill.alpha = 1; pill.transform = CGAffineTransformIdentity; }
                      completion:^(BOOL f) {
         [UIView animateWithDuration:0.3 delay:1.6 options:0 animations:^{ pill.alpha = 0; }
-                         completion:^(BOOL f2) { [pill removeFromSuperview]; }];
+                         completion:^(BOOL f2) { if (f2 || !pill.superview) { [pill removeFromSuperview]; if (gToast == pill) gToast = nil; } }];
     }];
 }
 

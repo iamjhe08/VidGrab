@@ -1,4 +1,5 @@
 #import "VGSettingsViewController.h"
+#import "VGDownloadDefaults.h"
 #import "VGTheme.h"
 #import "VGEngine.h"
 #import "VGCache.h"
@@ -16,7 +17,7 @@
 #import <AVFoundation/AVFoundation.h>
 
 // The order the sections are shown in: downloading, playing, privacy, then housekeeping, and About last.
-typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
+typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
 
 @interface VGSettingsViewController ()
 @property (nonatomic, copy) NSString *cacheSize;
@@ -114,6 +115,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
     switch (section) {
         case VGSectionStorage: return 3;
         case VGSectionEngine: return 4;
+        case VGSectionDownloads: return 4;
         case VGSectionFloat: return 4;
         case VGSectionGestures: return 5;
         case VGSectionSubtitles: return 3;
@@ -125,7 +127,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
 }
 
 - (NSString *)sectionTitle:(NSInteger)section {
-    return @[@"Download engine", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
+    return @[@"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
 }
 
 // A small exclamation button in front of the section title; it opens and closes the section's note.
@@ -180,13 +182,15 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         return @"Cache is temporary files: engine scratch files, leftover partial downloads, saved site icons and the browser's page cache. Your downloaded videos, website sign-ins, favorites and ad-blocker settings are never removed.";
     if (section == VGSectionAbout)
         return @"VidGrab checks for new versions every time you open it. Updates keep your downloads and settings.";
+    if (section == VGSectionDownloads)
+        return [NSString stringWithFormat:@"%@\n\nConnections per download: how many pieces are fetched at once. It helps most with downloads that arrive in many small parts. Files only hides every Save to Photos button, so your downloads stay in VidGrab's folder in the Files app.", VGDownloadDefaults.skipSheet ? @"The Download card shows only a Start button and uses these choices. Switch to Stream on the card to see every quality. Set either one to Always ask to pick a quality every time. Playlists always ask." : @"Right now the Download card shows every quality. To get just a Start button, set Default type to Video and pick a Default quality, or set Default type to Audio only."];
     if (section == VGSectionEngine)
         return @"With Find copied links on, a video link you copied shows up on Home as soon as you open VidGrab. With Keep downloading in background on, downloads carry on when you leave the app and you get a notification when they finish. If downloads from a site stop working, update the engine: sites change often and fixes arrive here first.";
     if (section == VGSectionFloat) {
         NSString *bubble = @"With Bubble outside the app on, the download bubble stays on screen when you leave VidGrab or use other apps. It fades after 3 seconds so it won't get in the way; touch it to bring it back. Drag it anywhere, tap it to return to your downloads.";
         NSString *sound = @"Sound when done plays VidGrab's own sound when your downloads finish while you're outside the app. It never plays inside VidGrab.";
         if (VGOverlay.bubbleAllowed) return [NSString stringWithFormat:@"%@\n\n%@", bubble, sound];
-        return @"Floating progress works when VidGrab is installed as a jailbreak package, or with the TrollStore .tipa file. On TrollStore, tap Install bubble helper once and choose TrollStore. The bubble inside VidGrab, background downloads and the finish notification still work here.";
+        return [NSString stringWithFormat:@"Floating progress works when VidGrab is installed as a jailbreak package, or with the TrollStore .tipa file. On TrollStore, tap Install bubble helper once and choose TrollStore. The bubble inside VidGrab, background downloads and the finish notification still work here.\n\nInstalled at: %@\nIf this is a jailbreak package and these are greyed out, please report it with this line.", NSBundle.mainBundle.bundlePath];
     }
     if (section == VGSectionGestures)
         return @"In the video player, swipe up or down on one half of the screen to change brightness and on the other half to change volume. Brightness/Volume gesture turns both on or off and Brightness side picks which half does what; they work when the phone is sideways. Swipe to seek jumps forward or back as you swipe sideways, in either direction of the phone, and the video follows your finger frame by frame. Seek distance is how far one swipe across the whole screen jumps. Progress line shows a thin bar along the bottom edge while the buttons are hidden. Brightness goes back to normal when you close the player. Swipes that start on the player's own buttons still work as usual.";
@@ -247,6 +251,33 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         c.accessoryView = sw;
         c.selectionStyle = UITableViewCellSelectionStyleNone;
         return c;
+    }
+    if (ip.section == VGSectionDownloads) {
+        if (ip.row == 0) {
+            UITableViewCell *c = [self cellWithTitle:@"Default quality" value:[VGDownloadDefaults nameForQuality:VGDownloadDefaults.quality] icon:@"sparkles.tv" tint:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return c;
+        }
+        if (ip.row == 2) {
+            UITableViewCell *c = [self cellWithTitle:@"Connections per download" value:[NSString stringWithFormat:@"%ld", (long)VGDownloadDefaults.threads] icon:@"point.3.connected.trianglepath.dotted" tint:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return c;
+        }
+        if (ip.row == 3) {
+            UITableViewCell *c = [self cellWithTitle:@"Files only (no Photos)" value:nil icon:@"folder" tint:nil];
+            UISwitch *sw = [UISwitch new];
+            sw.on = VGDownloadDefaults.filesOnly;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:@selector(filesOnlyChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        if (ip.row == 1) {
+            UITableViewCell *c = [self cellWithTitle:@"Default type" value:[VGDownloadDefaults kindName] icon:@"film" tint:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return c;
+        }
     }
     if (ip.section == VGSectionEngine) {
         if (ip.row == 0) {
@@ -407,6 +438,9 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
     NSInteger row = [self originalRow:ip];
     if (ip.section == VGSectionStorage && row == 1) [self clearCache];
     else if (ip.section == VGSectionEngine && row == 1) [self updateEngine];
+    else if (ip.section == VGSectionDownloads && row == 0) [self chooseDefaultQuality:[tv cellForRowAtIndexPath:ip]];
+    else if (ip.section == VGSectionDownloads && row == 1) [self chooseDefaultKind:[tv cellForRowAtIndexPath:ip]];
+    else if (ip.section == VGSectionDownloads && row == 2) [self chooseThreads:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionFloat && row == 3 && VGOverlay.canInstallHelper) [VGOverlay installHelperFrom:self];
     else if (ip.section == VGSectionFloat && row == 3 && !VGOverlay.bubbleAllowed) return;   // greyed out
     else if (ip.section == VGSectionFloat && row == 2 && !VGOverlay.fullInstall) return;
@@ -590,6 +624,61 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
             VGPlayerGestures.brightnessOnRight = r;
             [self.tableView reloadRowsAtIndexPaths:@[[self shownPathForOriginalRow:2 section:VGSectionGestures]] withRowAnimation:UITableViewRowAnimationNone];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = from;
+    a.popoverPresentationController.sourceRect = from.bounds;
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)chooseDefaultQuality:(UIView *)from {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Default quality"
+        message:@"Pick a quality and the Download card shows just a Start button, using the closest lower quality if a video lacks it. Always ask shows every quality." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSNumber *n in VGDownloadDefaults.qualityChoices) {
+        NSInteger q = n.integerValue;
+        NSString *name = [VGDownloadDefaults nameForQuality:q];
+        if (q == VGDownloadDefaults.quality) name = [name stringByAppendingString:@" \u2713"];
+        [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            VGDownloadDefaults.quality = q;
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:VGSectionDownloads] withRowAnimation:UITableViewRowAnimationNone];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = from;
+    a.popoverPresentationController.sourceRect = from.bounds;
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)filesOnlyChanged:(UISwitch *)sw { VGDownloadDefaults.filesOnly = sw.on; }
+
+- (void)chooseThreads:(UIView *)from {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Connections per download"
+        message:@"How many pieces are fetched at the same time. More can be faster for downloads that arrive in many small parts. Some sites block downloads if it is too high. Try 1 or 2 if a site gives errors." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSNumber *n in VGDownloadDefaults.threadChoices) {
+        NSInteger v = n.integerValue;
+        NSString *name = v == 8 ? @"8 (default)" : [NSString stringWithFormat:@"%ld", (long)v];
+        if (v == VGDownloadDefaults.threads) name = [name stringByAppendingString:@" \u2713"];
+        [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            VGDownloadDefaults.threads = v;
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:VGSectionDownloads] withRowAnimation:UITableViewRowAnimationNone];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = from;
+    a.popoverPresentationController.sourceRect = from.bounds;
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)chooseDefaultKind:(UIView *)from {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Default type" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *names = @[@"Always ask", @"Video", @"Audio only"];
+    for (NSInteger i = 0; i < 3; i++) {
+        NSInteger val = i - 1;
+        NSString *name = val == VGDownloadDefaults.kind ? [names[i] stringByAppendingString:@" \u2713"] : names[i];
+        [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            VGDownloadDefaults.kind = val;
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:VGSectionDownloads] withRowAnimation:UITableViewRowAnimationNone];
         }]];
     }
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];

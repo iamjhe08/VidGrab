@@ -14,6 +14,7 @@ TS_ID = 'com.t4mag0.vidgrab.ts'
 def set_id(path, new):
     with open(path, 'rb') as f: d = plistlib.load(f)
     d['CFBundleIdentifier'] = new
+    if new == TS_ID: d['CFBundleName'] = 'VidGrab for TrollStore'   # Havoc wants a product name different from the jailbreak version; the home screen name stays VidGrab
     with open(path, 'wb') as f: plistlib.dump(d, f)
 set_id(os.path.join(app, 'Info.plist'), TS_ID)
 set_id(os.path.join(app, 'PlugIns', 'VGShare.appex', 'Info.plist'), TS_ID + '.share')

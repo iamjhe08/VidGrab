@@ -135,6 +135,10 @@ static NSString *siteKey(NSString *host) {
 - (void)applyTo:(WKUserContentController *)controller host:(NSString *)host {
     [controller removeAllContentRuleLists];
     if (!self.ready || !self.enabled || [self isAllowedSite:host]) return;
+    // YouTube: the big block lists can stop the video from ever starting on some iOS 15 phones (it just keeps
+    // loading). YouTube ads are handled by the skip script instead, so the lists stay off there.
+    NSString *yh = host.lowercaseString;
+    if ([yh isEqualToString:@"youtu.be"] || [yh hasSuffix:@"youtube.com"] || [yh hasSuffix:@"youtube-nocookie.com"] || [yh hasSuffix:@"googlevideo.com"]) return;
     for (WKContentRuleList *l in self.lists) [controller addContentRuleList:l];
 }
 

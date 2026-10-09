@@ -113,6 +113,8 @@ extern NSString *const VGTaskFinishedNotification;
 - (void)fetch:(NSString *)url extra:(nullable NSDictionary *)extra completion:(void (^)(VGVideo *_Nullable video, NSString *_Nullable error))completion;
 /// Finds links the built-in player can play right away. Result: items (url + headers), hls, audio, height.
 - (void)streamLinkFor:(VGVideo *)video option:(nullable VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
+/// The VP9 picture and sound links of a quality the iPhone can't play directly (2K, 4K), for the live conversion.
+- (void)liveLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
 /// The link(s) a download of this option fetches (same lookup and same pick as the download). Result: items (url + headers), hls.
 - (void)linkListFor:(VGVideo *)video option:(nullable VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;
 - (void)directLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *_Nullable info, NSString *_Nullable error))completion;

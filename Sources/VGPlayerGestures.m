@@ -267,7 +267,7 @@ static const CGFloat kTrackHeight = 112;
 // Leave the player's own buttons and progress bar alone.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != g.view; v = v.superview)
-        if ([v isKindOfClass:UIControl.class] || [NSStringFromClass(v.class) isEqualToString:@"VGSaveCard"]) return NO;   // buttons and the save card handle their own touches
+        if ([v isKindOfClass:UIControl.class] || [NSStringFromClass(v.class) isEqualToString:@"VGSaveCard"] || [NSStringFromClass(v.class) isEqualToString:@"VGTrackSheet"]) return NO;   // buttons, the save card and the track list handle their own touches
     return YES;
 }
 

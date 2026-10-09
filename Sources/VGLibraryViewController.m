@@ -1,12 +1,14 @@
 #import "VGLibraryViewController.h"
+#import "VGMusic.h"
 #import "VGSavedPlaylistsViewController.h"
 #import "VGEngine.h"
+#import "VGDownloadDefaults.h"
 #import "VGActions.h"
 #import "VGTheme.h"
 #import "VGAudioEditorViewController.h"
 #import "VGFolderEditorViewController.h"
 
-typedef NS_ENUM(NSInteger, VGLibMode) { VGLibAll, VGLibRecent, VGLibFavorites, VGLibFolders };
+typedef NS_ENUM(NSInteger, VGLibMode) { VGLibAll, VGLibRecent, VGLibFavorites, VGLibFolders, VGLibPlaylists };
 typedef NS_ENUM(NSInteger, VGLibSort) { VGLibSortDate, VGLibSortName, VGLibSortSize, VGLibSortDuration };
 
 static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortUp", *const kGridKey = @"vgLibGrid";
@@ -195,11 +197,17 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 @property (nonatomic) VGLibSort sort;
 @property (nonatomic) BOOL sortUp, grid, selecting;
 @property (nonatomic, strong) VGFolder *openFolder;
+@property (nonatomic, copy) NSString *openPlaylistID;
+@property (nonatomic, copy) NSArray<NSDictionary *> *playlistRows;
+@property (nonatomic, strong) UIBarButtonItem *addPlaylistItem;
 @property (nonatomic, copy) NSArray<VGItem *> *rows;
 @property (nonatomic, copy) NSArray<VGFolder *> *folderRows;
 @property (nonatomic, strong) UIBarButtonItem *gridItem, *sortItem, *selectItem, *addFolderItem;
 @property (nonatomic, strong) UIStackView *actionBar;
 @property (nonatomic, strong) UIView *header;
+@property (nonatomic, strong) VGMiniMusicView *mini;
+@property (nonatomic, strong) VGMusicPanel *panel;
+@property (nonatomic) BOOL panelMinimized;
 @end
 
 @implementation VGLibraryViewController
@@ -236,7 +244,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     self.kind.selectedSegmentIndex = 0;
     [self.kind addTarget:self action:@selector(kindChanged) forControlEvents:UIControlEventValueChanged];
 
-    NSArray *names = @[@"All", @"Recently Added", @"Favorites", @"Folders"];
+    NSArray *names = @[@"All", @"Recently Added", @"Favorites", @"Folders", @"Playlists"];
     NSMutableArray *chips = [NSMutableArray array];
     UIStackView *chipRow = [UIStackView new];
     chipRow.spacing = 8;
@@ -322,14 +330,94 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
                                               [self.empty.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:40],
                                               [self.empty.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40]]];
 
+    self.mini = [VGMiniMusicView new];
+    [self.view addSubview:self.mini];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.mini.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:10],
+        [self.mini.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-10],
+        [self.mini.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-8]]];
+    __weak typeof(self) wsMini = self;
+    self.mini.onHeightChange = ^{ [wsMini updateMiniInset]; };
+    self.mini.onOpenPanel = ^{
+        wsMini.panelMinimized = NO;
+        if (wsMini.kind.selectedSegmentIndex != 1) { wsMini.kind.selectedSegmentIndex = 1; [wsMini kindChanged]; }
+        [wsMini updatePanel];
+    };
+    [self updateMiniInset];
+
+    // The big player: frosted glass over the song list on the Audio tab (no other page opens)
+    self.panel = [VGMusicPanel new];
+    self.panel.alpha = 0; self.panel.hidden = YES;
+    self.panel.translatesAutoresizingMaskIntoConstraints = YES;   // placed by hand, so it can never disturb the header layout
+    [self.view insertSubview:self.panel belowSubview:self.mini];
+    self.panel.onMinimize = ^{ wsMini.panelMinimized = YES; [wsMini updatePanel]; };
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(musicChanged) name:VGMusicChangedNotification object:nil];
+
     [self buildActionBar];
     [self updateBarButtons];
     [self updateChips];
     [self reload];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(libraryChanged) name:VGLibraryDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(libraryChanged) name:VGMusicPlaylistsChanged object:nil];
 }
 
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat top = CGRectGetMinY(self.collection.frame);
+    (void)top;
+    CGFloat H = self.view.bounds.size.height, W = self.view.bounds.size.width;
+    CGFloat sh = [self sheetHeight];
+    CGFloat sb = self.view.safeAreaInsets.bottom;   // the tab bar
+    CGFloat side = 8;
+    self.panel.bounds = CGRectMake(0, 0, W - 2 * side, sh);   // placed by bounds and center so a drag in progress is not disturbed
+    self.panel.center = CGPointMake(W / 2, H - sb - 8 - sh / 2);
+}
+
+/// The player slides up past half of the page.
+- (CGFloat)sheetHeight {
+    CGFloat H = self.view.bounds.size.height - self.view.safeAreaInsets.bottom - 8;
+    return MIN(H, MAX(H * 0.66, 400));
+}
+
+- (void)musicChanged { [self updatePanel]; }
+
+/// The big player shows while a song is loaded and the Audio tab is open; "minimize" shrinks it to the bar.
+- (void)updatePanel {
+    BOOL want = VGMusicPlayer.shared.current != nil && self.kind.selectedSegmentIndex == 1 && !self.selecting && !self.panelMinimized;
+    self.mini.suppressed = want;
+    [self.mini refresh];
+    if (want == !self.panel.hidden) { [self updateMiniInset]; return; }
+    CGFloat sh = [self sheetHeight];
+    if (want) {
+        [self.view layoutIfNeeded];
+        self.panel.hidden = NO;
+        self.panel.alpha = 1;
+        self.panel.transform = CGAffineTransformMakeTranslation(0, sh + 40);
+        [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.86 initialSpringVelocity:0.2 options:UIViewAnimationOptionAllowUserInteraction animations:^{
+            self.panel.transform = CGAffineTransformIdentity;
+        } completion:nil];
+    } else {
+        [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+            self.panel.transform = CGAffineTransformMakeTranslation(0, sh + 40);
+        } completion:^(BOOL f) {
+            if (self.mini.suppressed) return;   // came back while sliding down
+            self.panel.hidden = YES; self.panel.transform = CGAffineTransformIdentity;
+        }];
+    }
+    [self updateMiniInset];
+}
+
+/// Keeps the last songs from hiding behind the music bar.
+- (void)updateMiniInset {
+    CGFloat h = self.mini.hidden ? 0 : self.mini.currentHeight + 18;
+    if (self.mini.suppressed) h = 0;   // the big player floats over the list: the list shows through the glass
+    UIEdgeInsets in = self.collection.contentInset; in.bottom = h;
+    self.collection.contentInset = in;
+    UIEdgeInsets sc = self.collection.verticalScrollIndicatorInsets; sc.bottom = h;
+    self.collection.verticalScrollIndicatorInsets = sc;
+}
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -342,7 +430,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     __weak typeof(self) ws = self;
     return [[UICollectionViewCompositionalLayout alloc] initWithSectionProvider:^NSCollectionLayoutSection *(NSInteger section, id<NSCollectionLayoutEnvironment> env) {
         CGFloat width = env.container.effectiveContentSize.width;
-        BOOL foldersOnly = ws.mode == VGLibFolders && !ws.openFolder;
+        BOOL foldersOnly = (ws.mode == VGLibFolders && !ws.openFolder) || (ws.mode == VGLibPlaylists && !ws.openPlaylistID);
         if (ws.grid && !foldersOnly) {
             BOOL audio = ws.kind.selectedSegmentIndex == 1;
             NSInteger cols = width > 700 ? (audio ? 5 : 4) : (audio ? 3 : 2);
@@ -374,6 +462,8 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 #pragma mark Data
 
 - (BOOL)showingFolderList { return self.mode == VGLibFolders && !self.openFolder; }
+- (BOOL)showingPlaylistList { return self.mode == VGLibPlaylists && !self.openPlaylistID && self.kind.selectedSegmentIndex == 1; }
+- (BOOL)showingList { return [self showingFolderList] || [self showingPlaylistList]; }
 
 - (void)reload {
     BOOL audioKind = self.kind.selectedSegmentIndex == 1;
@@ -391,6 +481,10 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
         if (self.mode == VGLibRecent && [i.date compare:recentCutoff] == NSOrderedAscending) continue;
         if (self.mode == VGLibFavorites && !i.favorite) continue;
         if (self.mode == VGLibFolders && self.openFolder && ![i.folderID isEqualToString:self.openFolder.identifier]) continue;
+        if (self.mode == VGLibPlaylists) {
+            if (!self.openPlaylistID) continue;
+            if (![[VGMusicPlaylists withID:self.openPlaylistID][@"items"] containsObject:i.fileName]) continue;
+        }
         [all addObject:i];
     }
     BOOL up = self.sortUp;
@@ -406,7 +500,23 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
         }
         return up ? r : -r;
     }];
+    if (self.mode == VGLibPlaylists && self.openPlaylistID) {   // a playlist keeps the order the viewer gave it
+        NSArray *order = [VGMusicPlaylists withID:self.openPlaylistID][@"items"];
+        [all sortUsingComparator:^NSComparisonResult(VGItem *a, VGItem *b) {
+            NSUInteger x = [order indexOfObject:a.fileName], y = [order indexOfObject:b.fileName];
+            return x < y ? NSOrderedAscending : (x > y ? NSOrderedDescending : NSOrderedSame);
+        }];
+    }
     self.rows = all;
+
+    NSMutableArray *pl = [NSMutableArray array];
+    if ([self showingPlaylistList]) {
+        for (NSDictionary *d in [VGMusicPlaylists all]) {
+            if (q.length && [d[@"name"] rangeOfString:q options:NSCaseInsensitiveSearch].location == NSNotFound) continue;
+            [pl addObject:d];
+        }
+    }
+    self.playlistRows = pl;
 
     NSMutableArray *fl = [NSMutableArray array];
     if ([self showingFolderList]) {
@@ -420,15 +530,18 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     long long bytes = 0;
     for (VGItem *i in self.rows) bytes += i.bytes;
     NSString *noun = audioKind ? (self.rows.count == 1 ? @"song" : @"songs") : (self.rows.count == 1 ? @"video" : @"videos");
-    if ([self showingFolderList]) self.summary.text = [NSString stringWithFormat:@"%lu %@", (unsigned long)fl.count, fl.count == 1 ? @"folder" : @"folders"];
+    if ([self showingPlaylistList]) self.summary.text = [NSString stringWithFormat:@"%lu %@", (unsigned long)pl.count, pl.count == 1 ? @"playlist" : @"playlists"];
+    else if ([self showingFolderList]) self.summary.text = [NSString stringWithFormat:@"%lu %@", (unsigned long)fl.count, fl.count == 1 ? @"folder" : @"folders"];
     else self.summary.text = [NSString stringWithFormat:@"%lu %@ · %@%@", (unsigned long)self.rows.count, noun,
                               [NSByteCountFormatter stringFromByteCount:bytes countStyle:NSByteCountFormatterCountStyleFile],
                               self.openFolder ? [NSString stringWithFormat:@" · in %@", self.openFolder.name] : @""];
 
-    NSUInteger count = [self showingFolderList] ? fl.count : self.rows.count;
+    NSUInteger count = [self showingPlaylistList] ? pl.count : ([self showingFolderList] ? fl.count : self.rows.count);
     self.empty.hidden = count > 0;
     if (!count) {
         if (q.length) self.empty.text = @"Nothing matches your search.";
+        else if ([self showingPlaylistList]) self.empty.text = @"No playlists yet. Tap the + at the top to make one, or touch and hold a song and choose Add to Playlist.";
+        else if (self.mode == VGLibPlaylists && self.openPlaylistID) self.empty.text = @"This playlist is empty. Touch and hold a song in All and choose Add to Playlist.";
         else if ([self showingFolderList]) self.empty.text = @"No folders yet. Tap the folder button at the top to make one.";
         else if (self.mode == VGLibFavorites) self.empty.text = @"Nothing here yet. Touch and hold something and choose Favorite.";
         else if (self.mode == VGLibRecent) self.empty.text = @"Nothing was added in the last two weeks.";
@@ -443,6 +556,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 - (void)libraryChanged {
     if (!self.isViewLoaded || !self.view.window) return;
     if (self.openFolder && ![[VGEngine shared] folderWithID:self.openFolder.identifier]) { self.openFolder = nil; [self updateChips]; }
+    if (self.openPlaylistID && ![VGMusicPlaylists withID:self.openPlaylistID]) { self.openPlaylistID = nil; [self updateChips]; }
     [self reload];
 }
 
@@ -451,14 +565,18 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 #pragma mark Top bar
 
 - (void)kindChanged {
+    if (self.kind.selectedSegmentIndex == 0 && self.mode == VGLibPlaylists) { self.mode = VGLibAll; self.openPlaylistID = nil; }
+    [self updateChips];
     [self.collection setCollectionViewLayout:[self makeLayout] animated:NO];
     [self reload];
+    [self updatePanel];
 }
 
 - (void)chipTapped:(UIButton *)b {
     [[UISelectionFeedbackGenerator new] selectionChanged];
     if (self.mode == (VGLibMode)b.tag && b.tag == VGLibFolders && self.openFolder) self.openFolder = nil;
-    else { self.mode = (VGLibMode)b.tag; self.openFolder = nil; }
+    else if (self.mode == (VGLibMode)b.tag && b.tag == VGLibPlaylists && self.openPlaylistID) self.openPlaylistID = nil;
+    else { self.mode = (VGLibMode)b.tag; self.openFolder = nil; self.openPlaylistID = nil; }
     [self endSelecting];
     [self updateChips];
     [self.collection setCollectionViewLayout:[self makeLayout] animated:NO];
@@ -471,13 +589,21 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
         BOOL on = (VGLibMode)b.tag == self.mode;
         b.backgroundColor = on ? VGText : VGSurface2;
         [b setTitleColor:on ? VGBackground : VGText forState:UIControlStateNormal];
+        if (b.tag == VGLibPlaylists) {
+            b.hidden = self.kind.selectedSegmentIndex != 1;
+            NSDictionary *op = self.openPlaylistID ? [VGMusicPlaylists withID:self.openPlaylistID] : nil;
+            [b setTitle:op ? [@"‹ " stringByAppendingString:op[@"name"]] : @"Playlists" forState:UIControlStateNormal];
+        }
         if (b.tag == VGLibFolders) [b setTitle:self.openFolder ? [@"‹ " stringByAppendingString:self.openFolder.name] : @"Folders" forState:UIControlStateNormal];
     }
 }
 
 - (void)updateBarButtons {
     BOOL foldersOnly = [self showingFolderList];
+    BOOL plOnly = [self showingPlaylistList];
     if (!self.gridItem) {
+        self.addPlaylistItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus"] style:UIBarButtonItemStylePlain target:self action:@selector(newPlaylist)];
+        self.addPlaylistItem.accessibilityLabel = @"New playlist";
         self.gridItem = [[UIBarButtonItem alloc] initWithImage:nil style:UIBarButtonItemStylePlain target:self action:@selector(toggleGrid)];
         self.sortItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down"] style:UIBarButtonItemStylePlain target:nil action:nil];
         self.selectItem = [[UIBarButtonItem alloc] initWithTitle:@"Select" style:UIBarButtonItemStylePlain target:self action:@selector(toggleSelecting)];
@@ -488,7 +614,8 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     self.sortItem.menu = [self sortMenu];
     self.selectItem.title = self.selecting ? @"Done" : @"Select";
     if (self.selecting) { self.navigationItem.rightBarButtonItems = @[self.selectItem]; return; }
-    if (foldersOnly) self.navigationItem.rightBarButtonItems = @[self.addFolderItem];
+    if (plOnly) self.navigationItem.rightBarButtonItems = @[self.addPlaylistItem];
+    else if (foldersOnly) self.navigationItem.rightBarButtonItems = @[self.addFolderItem];
     else self.navigationItem.rightBarButtonItems = @[self.selectItem, self.gridItem, self.sortItem];
 }
 
@@ -526,10 +653,20 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 #pragma mark Collection
 
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    if ([self showingPlaylistList]) return (NSInteger)self.playlistRows.count;
     return [self showingFolderList] ? (NSInteger)self.folderRows.count : (NSInteger)self.rows.count;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+    if ([self showingPlaylistList]) {
+        VGLibFolderCell *c = [cv dequeueReusableCellWithReuseIdentifier:@"f" forIndexPath:ip];
+        NSDictionary *d = self.playlistRows[(NSUInteger)ip.item];
+        c.icon.image = [[UIImage systemImageNamed:@"music.note.list"] imageWithTintColor:VGAccent renderingMode:UIImageRenderingModeAlwaysOriginal];
+        c.titleLabel.text = d[@"name"];
+        NSUInteger n = [VGMusicPlaylists itemsIn:d[@"id"]].count;
+        c.subLabel.text = [NSString stringWithFormat:@"%lu %@", (unsigned long)n, n == 1 ? @"song" : @"songs"];
+        return c;
+    }
     if ([self showingFolderList]) {
         VGLibFolderCell *c = [cv dequeueReusableCellWithReuseIdentifier:@"f" forIndexPath:ip];
         VGFolder *f = self.folderRows[(NSUInteger)ip.item];
@@ -545,6 +682,14 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 }
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+    if ([self showingPlaylistList]) {
+        self.openPlaylistID = self.playlistRows[(NSUInteger)ip.item][@"id"];
+        [cv deselectItemAtIndexPath:ip animated:NO];
+        [self updateChips];
+        [self.collection setCollectionViewLayout:[self makeLayout] animated:NO];
+        [self reload];
+        return;
+    }
     if ([self showingFolderList]) {
         self.openFolder = self.folderRows[(NSUInteger)ip.item];
         [cv deselectItemAtIndexPath:ip animated:NO];
@@ -555,7 +700,10 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     }
     if (self.selecting) { [self updateActionBar]; return; }
     [cv deselectItemAtIndexPath:ip animated:YES];
-    [VGActions play:self.rows[(NSUInteger)ip.item] from:self];
+    VGItem *tapped = self.rows[(NSUInteger)ip.item];
+    if (tapped.audio) { self.panelMinimized = NO; [VGMusicPlayer.shared playQueue:self.rows startAt:(NSUInteger)ip.item]; return; }   // songs play in the music bar
+    [VGMusicPlayer.shared pause];
+    [VGActions play:tapped from:self];
 }
 
 - (void)collectionView:(UICollectionView *)cv didDeselectItemAtIndexPath:(NSIndexPath *)ip {
@@ -565,6 +713,10 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 - (UIContextMenuConfiguration *)collectionView:(UICollectionView *)cv contextMenuConfigurationForItemAtIndexPath:(NSIndexPath *)ip point:(CGPoint)point {
     if (self.selecting) return nil;
     __weak typeof(self) ws = self;
+    if ([self showingPlaylistList]) {
+        NSDictionary *d = self.playlistRows[(NSUInteger)ip.item];
+        return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray *sg) { return [ws menuForPlaylist:d]; }];
+    }
     if ([self showingFolderList]) {
         VGFolder *f = self.folderRows[(NSUInteger)ip.item];
         return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray *s) { return [ws menuForFolder:f]; }];
@@ -575,6 +727,71 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 }
 
 #pragma mark Menus
+
+- (void)askPlaylistName:(NSString *)title current:(NSString *)current done:(void (^)(NSString *name))done {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) { tf.placeholder = @"Playlist name"; tf.text = current; tf.autocapitalizationType = UITextAutocapitalizationTypeSentences; tf.clearButtonMode = UITextFieldViewModeWhileEditing; }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { done(a.textFields.firstObject.text ?: @""); }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)newPlaylist {
+    __weak typeof(self) ws = self;
+    [self askPlaylistName:@"New Playlist" current:nil done:^(NSString *name) {
+        NSDictionary *d = [VGMusicPlaylists create:name items:@[]];
+        [VGActions toast:[NSString stringWithFormat:@"Playlist “%@” made", d[@"name"]] icon:@"music.note.list" in:ws.view.window ?: ws.view];
+    }];
+}
+
+- (UIMenu *)menuForPlaylist:(NSDictionary *)d {
+    __weak typeof(self) ws = self;
+    NSString *pid = d[@"id"];
+    UIAction *play = [UIAction actionWithTitle:@"Play" image:[UIImage systemImageNamed:@"play.fill"] identifier:nil handler:^(UIAction *a) {
+        NSArray *items = [VGMusicPlaylists itemsIn:pid];
+        if (items.count) { ws.panelMinimized = NO; [VGMusicPlayer.shared playQueue:items startAt:0]; }
+    }];
+    UIAction *shuf = [UIAction actionWithTitle:@"Shuffle" image:[UIImage systemImageNamed:@"shuffle"] identifier:nil handler:^(UIAction *a) {
+        NSArray *items = [VGMusicPlaylists itemsIn:pid];
+        if (!items.count) return;
+        ws.panelMinimized = NO;
+        VGMusicPlayer.shared.shuffle = YES;
+        [VGMusicPlayer.shared playQueue:items startAt:arc4random_uniform((uint32_t)items.count)];
+    }];
+    UIAction *ren = [UIAction actionWithTitle:@"Rename" image:[UIImage systemImageNamed:@"pencil"] identifier:nil handler:^(UIAction *a) {
+        [ws askPlaylistName:@"Rename Playlist" current:d[@"name"] done:^(NSString *name) { [VGMusicPlaylists rename:pid to:name]; }];
+    }];
+    UIAction *del = [UIAction actionWithTitle:@"Delete Playlist" image:[UIImage systemImageNamed:@"trash"] identifier:nil handler:^(UIAction *a) {
+        UIAlertController *al = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Delete “%@”?", d[@"name"]]
+                                                                    message:@"Only the playlist is removed. Your songs stay in the Library."
+                                                             preferredStyle:UIAlertControllerStyleAlert];
+        [al addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [al addAction:[UIAlertAction actionWithTitle:@"Delete Playlist" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { [VGMusicPlaylists remove:pid]; }]];
+        [ws presentViewController:al animated:YES completion:nil];
+    }];
+    del.attributes = UIMenuElementAttributesDestructive;
+    return [UIMenu menuWithChildren:@[play, shuf, ren, del]];
+}
+
+/// "Add to Playlist": a new one or one of the viewer's own.
+- (UIMenu *)playlistMenuFor:(NSArray<VGItem *> *)items {
+    __weak typeof(self) ws = self;
+    NSArray *names = [items valueForKey:@"fileName"];
+    NSMutableArray *kids = [NSMutableArray array];
+    [kids addObject:[UIAction actionWithTitle:@"New Playlist…" image:[UIImage systemImageNamed:@"plus"] identifier:nil handler:^(UIAction *a) {
+        [ws askPlaylistName:@"New Playlist" current:nil done:^(NSString *name) {
+            NSDictionary *d = [VGMusicPlaylists create:name items:names];
+            [VGActions toast:[NSString stringWithFormat:@"Added to “%@”", d[@"name"]] icon:@"music.note.list" in:ws.view.window ?: ws.view];
+        }];
+    }]];
+    for (NSDictionary *d in [VGMusicPlaylists all]) {
+        [kids addObject:[UIAction actionWithTitle:d[@"name"] image:[UIImage systemImageNamed:@"music.note.list"] identifier:nil handler:^(UIAction *a) {
+            [VGMusicPlaylists add:names to:d[@"id"]];
+            [VGActions toast:[NSString stringWithFormat:@"Added to “%@”", d[@"name"]] icon:@"music.note.list" in:ws.view.window ?: ws.view];
+        }]];
+    }
+    return [UIMenu menuWithTitle:@"Add to Playlist" image:[UIImage systemImageNamed:@"text.badge.plus"] identifier:nil options:0 children:kids];
+}
 
 - (UIMenu *)menuForFolder:(VGFolder *)f {
     __weak typeof(self) ws = self;
@@ -624,11 +841,15 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 - (UIMenu *)menuFor:(VGItem *)item source:(UIView *)source {
     __weak typeof(self) ws = self;
     NSMutableArray *top = [NSMutableArray array];
-    [top addObject:[UIAction actionWithTitle:@"Play" image:[UIImage systemImageNamed:@"play.fill"] identifier:nil handler:^(UIAction *a) { [VGActions play:item from:ws]; }]];
+    [top addObject:[UIAction actionWithTitle:@"Play" image:[UIImage systemImageNamed:@"play.fill"] identifier:nil handler:^(UIAction *a) {
+        if (item.audio) { ws.panelMinimized = NO; NSUInteger at = [ws.rows indexOfObject:item]; if (at != NSNotFound) [VGMusicPlayer.shared playQueue:ws.rows startAt:at]; else [VGMusicPlayer.shared playQueue:@[item] startAt:0]; }
+        else { [VGMusicPlayer.shared pause]; [VGActions play:item from:ws]; }
+    }]];
+    if (item.audio) [top addObject:[UIAction actionWithTitle:@"Open in full player" image:[UIImage systemImageNamed:@"rectangle.expand.vertical"] identifier:nil handler:^(UIAction *a) { [VGMusicPlayer.shared pause]; [VGActions play:item from:ws]; }]];
     [top addObject:[UIAction actionWithTitle:item.favorite ? @"Remove from Favorites" : @"Favorite" image:[UIImage systemImageNamed:item.favorite ? @"heart.slash" : @"heart"] identifier:nil
                                      handler:^(UIAction *a) { [[VGEngine shared] setFavorite:!item.favorite forItem:item]; }]];
     NSMutableArray *share = [NSMutableArray array];
-    if (item.photos) [share addObject:[UIAction actionWithTitle:@"Save to Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
+    if (item.photos && !VGDownloadDefaults.filesOnly) [share addObject:[UIAction actionWithTitle:@"Save to Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
     [share addObject:[UIAction actionWithTitle:@"Save to Files" image:[UIImage systemImageNamed:@"folder"] identifier:nil handler:^(UIAction *a) { [VGActions saveToFiles:item from:ws]; }]];
     [share addObject:[UIAction actionWithTitle:@"Share" image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil handler:^(UIAction *a) { [VGActions share:item from:ws source:source]; }]];
     NSMutableArray *tools = [NSMutableArray array];
@@ -649,6 +870,13 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
             [conv addObject:[UIAction actionWithTitle:f[1] image:nil identifier:nil handler:^(UIAction *a) { [ws convert:item to:f[0]]; }]];
         }
         if (conv.count) [tools addObject:[UIMenu menuWithTitle:@"Convert to…" image:[UIImage systemImageNamed:@"waveform"] identifier:nil options:0 children:conv]];
+    }
+    if (item.audio) {
+        [tools addObject:[self playlistMenuFor:@[item]]];
+        if (self.mode == VGLibPlaylists && self.openPlaylistID) {
+            NSString *pid = self.openPlaylistID;
+            [tools addObject:[UIAction actionWithTitle:@"Remove from Playlist" image:[UIImage systemImageNamed:@"minus.circle"] identifier:nil handler:^(UIAction *a) { [VGMusicPlaylists removeFile:item.fileName from:pid]; }]];
+        }
     }
     [tools addObject:[self folderMenuFor:@[item]]];
     [tools addObject:[UIAction actionWithTitle:@"Move to Vault" image:[UIImage systemImageNamed:@"lock"] identifier:nil handler:^(UIAction *a) {
@@ -736,7 +964,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 #pragma mark Selecting
 
 - (void)buildActionBar {
-    NSArray *defs = @[@[@"Favorite", @"heart", @"selFavorite"], @[@"Folder", @"folder", @"selFolder"], @[@"Share", @"square.and.arrow.up", @"selShare"], @[@"Delete", @"trash", @"selDelete"]];
+    NSArray *defs = @[@[@"Favorite", @"heart", @"selFavorite"], @[@"Folder", @"folder", @"selFolder"], @[@"Playlist", @"music.note.list", @"selPlaylist"], @[@"Share", @"square.and.arrow.up", @"selShare"], @[@"Delete", @"trash", @"selDelete"]];
     NSMutableArray *btns = [NSMutableArray array];
     for (NSArray *d in defs) {
         UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -781,7 +1009,10 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     self.selecting = YES;
     self.collection.allowsMultipleSelection = YES;
     self.actionBar.hidden = NO;
+    self.actionBar.arrangedSubviews[2].hidden = self.kind.selectedSegmentIndex != 1;   // "Playlist" is for songs
     self.collection.contentInset = UIEdgeInsetsMake(0, 0, 70, 0);
+    self.mini.alpha = 0; self.mini.userInteractionEnabled = NO;   // the selection bar takes the bottom
+    [self updatePanel];
     [self updateActionBar];
     [self updateBarButtons];
     [self.collection reloadData];
@@ -792,7 +1023,9 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     self.selecting = NO;
     self.collection.allowsMultipleSelection = NO;
     self.actionBar.hidden = YES;
-    self.collection.contentInset = UIEdgeInsetsZero;
+    self.mini.alpha = 1; self.mini.userInteractionEnabled = YES;
+    [self updatePanel];
+    [self updateMiniInset];
     [self updateBarButtons];
     [self.collection reloadData];
 }
@@ -804,6 +1037,24 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     for (VGItem *i in items) [[VGEngine shared] setFavorite:!allFav forItem:i];
     [VGActions toast:allFav ? @"Removed from Favorites" : @"Added to Favorites" icon:allFav ? @"heart.slash" : @"heart.fill" in:self.view.window ?: self.view];
     [self endSelecting];
+}
+
+- (void)selPlaylist {
+    NSArray<VGItem *> *items = [self selectedItems];
+    if (!items.count) return;
+    NSArray *names = [items valueForKey:@"fileName"];
+    __weak typeof(self) ws = self;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Add to playlist" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [a addAction:[UIAlertAction actionWithTitle:@"New Playlist…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        [ws askPlaylistName:@"New Playlist" current:nil done:^(NSString *name) { [VGMusicPlaylists create:name items:names]; [ws endSelecting]; }];
+    }]];
+    for (NSDictionary *d in [VGMusicPlaylists all]) {
+        [a addAction:[UIAlertAction actionWithTitle:d[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [VGMusicPlaylists add:names to:d[@"id"]]; [ws endSelecting]; }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = self.actionBar;
+    a.popoverPresentationController.sourceRect = self.actionBar.bounds;
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)selFolder {

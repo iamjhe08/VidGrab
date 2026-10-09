@@ -1,8 +1,10 @@
 #import "VGQualitySheet.h"
+#import "VGDownloadDefaults.h"
 #import "VGEngine.h"
 #import "VGTheme.h"
 #import "VGActions.h"
 #import "VGQualityCell.h"
+#import <AVFoundation/AVFoundation.h>
 
 typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheetPick, VGSheetDownloading, VGSheetDone };
 
@@ -13,6 +15,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 @property (nonatomic, strong) VGItem *item;
 @property (nonatomic, weak) VGTask *task;
 @property (nonatomic) NSInteger selected;
+@property (nonatomic) BOOL userPicked;   // a quality was tapped, so Stream uses it instead of choosing by itself
 
 @property (nonatomic, strong) UIImageView *thumb;
 @property (nonatomic, strong) UILabel *titleLabel, *metaLabel;
@@ -25,6 +28,10 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 @property (nonatomic) BOOL usingCandidates;
 @property (nonatomic, copy) NSString *pageError;
 @property (nonatomic) NSInteger candidateIndex;
+@property (nonatomic, strong) UISegmentedControl *modeControl;
+@property (nonatomic, strong) UIButton *dlButton;
+@property (nonatomic, strong) UILabel *heading;
+@property (nonatomic) BOOL opening;
 @end
 
 @implementation VGQualitySheet
@@ -154,6 +161,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 - (void)buildPick {
     UILabel *h = [self label:VGFont(18, UIFontWeightHeavy) color:VGText lines:1];
     h.text = @"Choose quality";
+    self.heading = h;
     UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
     layout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
     layout.itemSize = CGSizeMake(120, 128);
@@ -168,7 +176,16 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
     [self.list.heightAnchor constraintEqualToConstant:128].active = YES;
 
     UIButton *dl = VGPrimaryButton(@"Download", @"arrow.down.to.line");
+    self.dlButton = dl;
     [dl addTarget:self action:@selector(download) forControlEvents:UIControlEventTouchUpInside];
+    self.modeControl = [[UISegmentedControl alloc] initWithItems:@[@"Download", @"Stream"]];
+    self.modeControl.selectedSegmentIndex = [NSUserDefaults.standardUserDefaults boolForKey:@"vgStreamMode"] ? 1 : 0;
+    self.modeControl.selectedSegmentTintColor = VGAccent;
+    self.modeControl.backgroundColor = VGSurface2;
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGSecondary, NSFontAttributeName: VGFont(15, UIFontWeightSemibold)} forState:UIControlStateNormal];
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.whiteColor, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
+    [self.modeControl.heightAnchor constraintEqualToConstant:40].active = YES;
+    [self.modeControl addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
     self.caption = [self label:VGFont(13, UIFontWeightMedium) color:VGTertiary lines:0];
     self.caption.textAlignment = NSTextAlignmentCenter;
     self.linkCopyButton = VGSecondaryButton(@"Copy direct link", @"link");
@@ -179,7 +196,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
     self.othersButton.tintColor = VGSecondary;
     self.othersButton.hidden = YES;
     [self.othersButton addTarget:self action:@selector(showCandidateList) forControlEvents:UIControlEventTouchUpInside];
-    self.pickView = [self vstack:@[[self inset:h], self.list, [self inset:[self vstack:@[dl, self.linkCopyButton, self.caption, self.othersButton] spacing:10]]] spacing:12];
+    self.pickView = [self vstack:@[[self inset:h], self.list, [self inset:[self vstack:@[self.modeControl, dl, self.linkCopyButton, self.caption, self.othersButton] spacing:10]]] spacing:12];
 }
 
 - (void)buildProgress {
@@ -271,9 +288,11 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
             }] resume];
         }
         self.selected = 0;
+        self.userPicked = NO;
         [video.options enumerateObjectsUsingBlock:^(VGOption *o, NSUInteger i, BOOL *stop) {
             if (o.photos && !o.convert) { self.selected = (NSInteger)i; *stop = YES; }
         }];
+        self.selected = [VGDownloadDefaults indexIn:video.options current:self.selected];   // Settings > Downloads
         [self.list reloadData];
         [self updateCaption];
         [self setState:VGSheetPick];
@@ -330,17 +349,96 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
     [[VGEngine shared] copyErrorDetails:^{ [VGActions toast:@"Error details copied" icon:@"doc.on.doc.fill" in:self.view]; }];
 }
 
+- (BOOL)streamMode { return self.modeControl.selectedSegmentIndex == 1; }
+
+- (void)modeChanged {
+    [NSUserDefaults.standardUserDefaults setBool:[self streamMode] forKey:@"vgStreamMode"];
+    [self updateCaption];
+}
+
+- (void)setPrimaryTitle:(NSString *)title icon:(NSString *)icon {
+    UIButtonConfiguration *c = self.dlButton.configuration;
+    if (c) {
+        c.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{NSFontAttributeName: VGFont(16, UIFontWeightBold)}];
+        c.image = [UIImage systemImageNamed:icon withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightBold]];
+        self.dlButton.configuration = c;
+    } else {
+        [self.dlButton setTitle:title forState:UIControlStateNormal];
+        [self.dlButton setImage:[UIImage systemImageNamed:icon] forState:UIControlStateNormal];
+    }
+}
+
+/// Plays the picked quality in VidGrab's player without saving it.
+- (void)stream {
+    if (self.opening || (NSUInteger)self.selected >= self.video.options.count) return;
+    VGOption *picked = self.video.options[self.selected];
+    VGOption *opt = picked.audio ? picked : nil;
+    // A tapped video quality: the player opens at once on its own pick, then moves to this quality while it plays.
+    VGOption *chosen = (!picked.audio && self.userPicked) ? picked : nil;
+    VGVideo *video = self.video;
+    self.opening = YES;
+    self.dlButton.enabled = NO;
+    [self updateCaption];
+    __weak typeof(self) ws = self;
+    void (^fail)(NSString *) = ^(NSString *msg) {
+        ws.opening = NO; ws.dlButton.enabled = YES; [ws updateCaption];
+        ws.errorLabel.text = [NSString stringWithFormat:@"Couldn't stream this video.\n\n%@", msg ?: @"Try Download instead."];
+        [ws setState:VGSheetError];
+    };
+    [[VGEngine shared] streamLinkFor:video option:opt completion:^(NSDictionary *info, NSString *error) {
+        if (!ws) return;
+        if (!info) { fail(error); return; }
+        [VGPlayerViewController prepareStream:info completion:^(AVPlayerItem *item, NSString *err) {
+            if (!ws) return;
+            if (!item) { fail(err); return; }
+            ws.opening = NO; ws.dlButton.enabled = YES; [ws updateCaption];
+            VGPlayerViewController *p = [VGPlayerViewController playerForStreamItem:item video:video option:opt audio:[info[@"audio"] boolValue]];
+            p.streamMaster = [info[@"master"] boolValue];
+            p.streamVariants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
+            [NSNotificationCenter.defaultCenter postNotificationName:@"VGPauseBrowserMedia" object:nil];
+            UIViewController *host = ws.presentingViewController ?: ws;
+            [ws dismissViewControllerAnimated:YES completion:^{
+                UIViewController *top = host;
+                while (top.presentedViewController) top = top.presentedViewController;
+                [top presentViewController:p animated:YES completion:^{
+                [p start];
+                if (chosen) [p switchToOption:chosen];
+            }];
+            }];
+        }];
+    }];
+}
+
 - (void)updateCaption {
     VGOption *o = (NSUInteger)self.selected < self.video.options.count ? self.video.options[self.selected] : nil;
     if (!o) return;
+    // With a default set in Settings > Downloads, Download shows just the start button; Stream shows every quality.
+    BOOL compact = VGDownloadDefaults.skipSheet && !self.video.isPlaylist && ![self streamMode];
+    self.list.hidden = compact;
+    self.heading.superview.hidden = compact;
+    if (compact) {
+        NSString *what = o.audio ? @"audio" : o.res;
+        [self setPrimaryTitle:[NSString stringWithFormat:@"Start download \u00b7 %@", what] icon:@"arrow.down.to.line"];
+        self.caption.text = [NSString stringWithFormat:@"Your default: %@ \u00b7 %@%@. Change it in Settings > Downloads. Switch to Stream to see every quality.", what, o.format ?: @"MP4", o.sizeText.length ? [@" \u00b7 " stringByAppendingString:o.sizeText] : @""];
+        return;
+    }
+    if ([self streamMode]) {
+        [self setPrimaryTitle:(self.opening ? @"Opening…" : @"Stream") icon:@"play.fill"];
+        self.caption.text = o.audio ? @"Plays now in VidGrab's player. Nothing is saved unless you tap the download button there"
+                                    : (self.userPicked ? [NSString stringWithFormat:@"Opens right away, then switches to %@ as soon as it's ready. Tap the download button in the player to keep it", o.res]
+                                       : @"Quality adjusts by itself. Tap a quality to choose one. Tap the download button in the player to keep it");
+        return;
+    }
+    [self setPrimaryTitle:@"Download" icon:@"arrow.down.to.line"];
     if ([o.identifier isEqualToString:@"mp3"]) self.caption.text = @"MP3 at 256 kbps · plays anywhere. Share it or save to Files";
     else if (o.audio) self.caption.text = @"M4A audio · Share it or save to Files";
     else if (o.convert) self.caption.text = @"Converted to MP4 on your iPhone so Photos can play it. Takes a few minutes; keep the app open.";
-    else if (o.photos) self.caption.text = @"MP4 · Ready for your Photos library";
+    else if (o.photos) self.caption.text = @"MP4 · Works with Photos";
     else self.caption.text = [NSString stringWithFormat:@"%@ · Photos can't open this one, but Files and other apps can", o.format];
 }
 
 - (void)download {
+    if ([self streamMode]) { [self stream]; return; }
     VGOption *opt = self.video.options[self.selected];
     self.bar.progress = 0;
     self.percentLabel.text = @"0%";
@@ -365,7 +463,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
         ws.item = item;
         ws.doneSub.text = [NSString stringWithFormat:@"%@ · %@ · in your Downloads", item.res,
                            [NSByteCountFormatter stringFromByteCount:item.bytes countStyle:NSByteCountFormatterCountStyleFile]];
-        ws.photosButton.hidden = !item.photos;
+        ws.photosButton.hidden = !item.photos || VGDownloadDefaults.filesOnly;
         [ws setState:VGSheetDone];
         [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
     }];
@@ -428,6 +526,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     self.selected = ip.item;
+    self.userPicked = YES;
     [[UISelectionFeedbackGenerator new] selectionChanged];
     for (NSIndexPath *p in cv.indexPathsForVisibleItems) {
         [(VGQualityCell *)[cv cellForItemAtIndexPath:p] configure:self.video.options[p.item] selected:p.item == self.selected];

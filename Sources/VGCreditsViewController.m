@@ -3,6 +3,8 @@
 
 @implementation VGCreditsViewController {
     NSArray<NSDictionary *> *_groups;
+    UILabel *_foot;
+    UIView *_footBox;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -38,17 +40,30 @@ static NSDictionary *c(NSString *name, NSString *what, NSString *license, NSStri
             c(@"TrollSpeed (Lessica)", @"The way the floating progress bubble draws over other apps on jailbroken phones.", @"MIT", @"https://github.com/Lessica/TrollSpeed"),
         ]},
     ];
-    UILabel *foot = [UILabel new];
-    foot.text = @"Thank you to everyone who builds and shares these projects. VidGrab is free and open source (GPL v3).";
-    foot.font = VGFont(12, UIFontWeightMedium);
-    foot.textColor = VGTertiary;
-    foot.numberOfLines = 0;
-    foot.textAlignment = NSTextAlignmentCenter;
-    UIView *fv = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 70)];
-    foot.frame = CGRectMake(24, 14, UIScreen.mainScreen.bounds.size.width - 48, 44);
-    foot.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [fv addSubview:foot];
-    self.tableView.tableFooterView = fv;
+    _foot = [UILabel new];
+    _foot.text = @"Thank you to everyone who builds and shares these projects.\nVidGrab is free and open source (GPL v3).";
+    _foot.font = VGFont(13, UIFontWeightMedium);
+    _foot.textColor = VGSecondary;
+    _foot.numberOfLines = 0;
+    _foot.textAlignment = NSTextAlignmentCenter;
+    _footBox = [UIView new];
+    [_footBox addSubview:_foot];
+    self.tableView.tableFooterView = _footBox;
+}
+
+/// Sizes the closing note to the screen so it is never cut off or hidden behind the home bar.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = self.tableView.bounds.size.width;
+    if (w <= 0) return;
+    CGFloat textW = w - 72;
+    CGFloat h = ceil([_foot sizeThatFits:CGSizeMake(textW, CGFLOAT_MAX)].height);
+    CGFloat total = h + 20 + 48 + self.view.safeAreaInsets.bottom;
+    if (fabs(_footBox.frame.size.height - total) > 0.5 || fabs(_footBox.frame.size.width - w) > 0.5) {
+        _footBox.frame = CGRectMake(0, 0, w, total);
+        self.tableView.tableFooterView = _footBox;
+    }
+    _foot.frame = CGRectMake(36, 20, textW, h);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return (NSInteger)_groups.count; }

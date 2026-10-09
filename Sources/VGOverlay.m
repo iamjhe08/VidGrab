@@ -4,6 +4,7 @@
 #import <notify.h>
 #import <objc/message.h>
 #import <signal.h>
+#import <errno.h>
 
 
 // Talks to the bubble helper (VidGrabHUD) with Darwin notifications and one 64-bit state value.
@@ -14,6 +15,8 @@
 #define N_HIDE   "com.t4mag0.vidgrab.hud.exit"
 #define N_PID    "com.t4mag0.vidgrab.hud.pid"
 #define N_ALIVE  "com.t4mag0.vidgrab.hud.alive"
+#define N_HUDPID "com.t4mag0.vidgrab.hud.hudpid"
+#define N_DIAG   "com.t4mag0.vidgrab.hud.diag"
 
 
 static NSString *const kEnabledKey = @"vgOverlayBubble";
@@ -57,7 +60,12 @@ static uint64_t GetState(const char *name) { uint64_t v = 0; notify_get_state(To
 
 + (BOOL)isJailbreakInstall {
     NSString *b = NSBundle.mainBundle.bundlePath;
-    return [b containsString:@"/.jbroot-"] || [b hasPrefix:@"/Applications/"] || [b hasPrefix:@"/var/jb/"] || [b hasPrefix:@"/private/var/jb/"];
+    if ([b containsString:@"/.jbroot-"] || [b hasPrefix:@"/Applications/"] || [b hasPrefix:@"/var/jb/"] || [b hasPrefix:@"/private/var/jb/"]) return YES;
+    // Rootless jailbreaks often report the real location of /var/jb, e.g. /private/preboot/<id>/dopamine-<id>/procursus/Applications/VidGrab.app
+    if ([b hasPrefix:@"/private/preboot/"] || [b containsString:@"/procursus/"] || [b containsString:@"/dopamine-"] || [b containsString:@"/jb/"]) return YES;
+    // Anything installed outside the normal app folders (App Store, sideload and TrollStore apps all live in .../containers/Bundle/Application/) with the helper inside is a package install.
+    BOOL inContainers = [b containsString:@"/containers/Bundle/Application/"];
+    return !inContainers && [b.lastPathComponent isEqualToString:@"VidGrab.app"] && [b.stringByDeletingLastPathComponent.lastPathComponent isEqualToString:@"Applications"] && [self supported];
 }
 
 // VidGrab opened from inside LiveContainer: it only gets LiveContainer's permissions.
@@ -131,6 +139,8 @@ static UIDocumentInteractionController *gDoc;
     [nc addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:main usingBlock:^(NSNotification *n) {
         gInBackground = NO;
         [self hide];
+        // make sure the bubble outside the app is gone, even if the first message was missed
+        for (NSNumber *d in @[@0.3, @1.0, @2.5]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!gInBackground) [self hide]; });
     }];
     [nc addObserverForName:VGTaskFinishedNotification object:nil queue:main usingBlock:^(NSNotification *n) {
         if (!gInBackground) return;
@@ -176,6 +186,8 @@ static NSDate *gLastLaunch;
 /// TrollStore: ask the helper app to start the bubble service (it flashes on screen and returns to VidGrab).
 + (void)launchHelperIfNeeded {
     if ([self isJailbreakInstall] || [self serviceAlive] || ![self helperInstalled]) return;
+    pid_t hp = (pid_t)GetState(N_HUDPID);
+    if (hp > 0 && (kill(hp, 0) == 0 || errno == EPERM)) return;   // a helper is still around (maybe just asleep): don't start a second one
     if (gLastLaunch && -[gLastLaunch timeIntervalSinceNow] < 120) return;
     gLastLaunch = NSDate.date;
     [self startService];
@@ -261,6 +273,9 @@ static NSDate *gLastLaunch;
     [self show:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         BOOL alive = [self serviceAlive];
+        uint64_t dg = GetState(N_DIAG);
+        if (dg >> 63) [self note:[NSString stringWithFormat:@"bubble service: window id %u, shown %llu time(s), last count it saw %llu", (unsigned)(dg & 0xFFFFFFFF), (dg >> 32) & 0xFF, (dg >> 40) & 0xFF]];
+        else [self note:@"bubble service: old version still running (restart your phone or do a userspace reboot so the new one starts)"];
         if (!alive) [self note:jb ? @"bubble service isn't running. Restart your phone (or do a userspace reboot) and try again."
                                   : @"bubble service stopped answering"];
         done(alive, [gLog stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);

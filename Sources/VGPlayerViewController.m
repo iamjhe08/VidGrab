@@ -1,14 +1,25 @@
+#import "VGDownloadDefaults.h"
 #import "VGActions.h"
 #import "VGTheme.h"
 #import "VGKeepAlive.h"
 #import "VGPlayerGestures.h"
 #import "VGSubtitles.h"
+#import "VGLive.h"
+#import "VGMusic.h"
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 #import <MediaPlayer/MediaPlayer.h>
 
 // VidGrab's own video player: themed controls, live scrubbing, screen size (fit, fill, stretch),
 // playback speed, picture-in-picture, background sound, lock screen controls and resume.
+
+@class VGPlayerViewController;
+/// The small bar that keeps a video playing at the bottom of the app after the player is pressed down.
+@interface VGMiniVideoView : UIView
++ (void)showFor:(VGPlayerViewController *)player;
++ (void)closeOthersThan:(VGPlayerViewController *)player;
++ (BOOL)activeFor:(VGPlayerViewController *)player;
+@end
 
 static NSMutableSet *gPiPPlayers;   // players kept alive while in picture-in-picture after closing
 static NSInteger gOpenPlayers;      // players on screen or in picture-in-picture
@@ -498,6 +509,219 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @end
 
 
+
+#pragma mark Track list (playlist mode)
+
+@interface VGTrackSheet : UIView <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate>
+@property (nonatomic, copy) void (^onPick)(NSInteger position);
+@property (nonatomic, copy) NSDictionary *(^provider)(void);   // asked now and then, so the highlight follows the playing track
+@property (nonatomic, strong) NSArray<NSString *> *titles;
+@property (nonatomic) NSInteger current;
+@property (nonatomic, strong) UIVisualEffectView *card;   // the same frosted panel as the Library music player
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) UIView *header, *grab;
+@property (nonatomic, strong) UILabel *head;
+@property (nonatomic, strong) UIButton *closeB;
+@end
+
+@implementation VGTrackSheet {
+    UIViewPropertyAnimator *_blur;
+    BOOL _closing;
+    NSTimer *_poll;
+}
+
+- (instancetype)initWithTitles:(NSArray<NSString *> *)titles current:(NSInteger)current {
+    if (!(self = [super initWithFrame:CGRectZero])) return nil;
+    self.titles = titles; self.current = current;
+    self.backgroundColor = UIColor.clearColor;   // no dimming: the player shows through the glass, like the Library player
+    UITapGestureRecognizer *outside = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismiss)];
+    outside.delegate = self;
+    [self addGestureRecognizer:outside];
+    self.card = [[UIVisualEffectView alloc] initWithEffect:nil];
+    self.card.layer.cornerRadius = 28;
+    self.card.layer.cornerCurve = kCACornerCurveContinuous;
+    self.card.clipsToBounds = YES;
+    self.card.layer.borderWidth = 1;
+    self.card.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.14].CGColor;
+    [self addSubview:self.card];
+    UIView *c = self.card.contentView;
+    c.backgroundColor = [UIColor colorWithWhite:0 alpha:0.5];   // clearly darker than the Library player so the list reads easily
+    self.header = [UIView new];
+    [c addSubview:self.header];
+    self.grab = [UIView new];
+    self.grab.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
+    self.grab.layer.cornerRadius = 2.5;
+    [self.header addSubview:self.grab];
+    self.head = [UILabel new];
+    self.head.text = [NSString stringWithFormat:@"Playlist  \u00b7  %lu tracks", (unsigned long)titles.count];
+    self.head.font = [UIFont systemFontOfSize:20 weight:UIFontWeightHeavy];
+    self.head.textColor = UIColor.whiteColor;
+    [self.header addSubview:self.head];
+    self.closeB = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.closeB setImage:[UIImage systemImageNamed:@"chevron.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightBold]] forState:UIControlStateNormal];
+    self.closeB.tintColor = UIColor.whiteColor;
+    self.closeB.accessibilityLabel = @"Close track list";
+    [self.closeB addTarget:self action:@selector(dismiss) forControlEvents:UIControlEventTouchUpInside];
+    [self.header addSubview:self.closeB];
+    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table.backgroundColor = UIColor.clearColor;
+    self.table.separatorColor = [UIColor colorWithWhite:1 alpha:0.08];
+    self.table.dataSource = self; self.table.delegate = self;
+    self.table.rowHeight = 56;
+    [c addSubview:self.table];
+    // Drag the top of the sheet down to close it, like the Library player.
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragged:)];
+    pan.delegate = self;
+    [self.header addGestureRecognizer:pan];
+    return self;
+}
+
+/// A light frosted glass: only part of the blur is applied, so what is behind shows through as soft shapes.
+- (void)applyBlur {
+    if (_blur) { [_blur stopAnimation:YES]; _blur = nil; self.card.effect = nil; }
+    UIViewPropertyAnimator *a = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
+        self.card.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+    }];
+    a.pausesOnCompletion = YES;
+    a.fractionComplete = 0.45;
+    _blur = a;
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if (self.window) {
+        [self applyBlur];
+        __weak typeof(self) ws = self;
+        _poll = [NSTimer scheduledTimerWithTimeInterval:0.4 repeats:YES block:^(NSTimer *t) { [ws syncFromProvider]; }];
+    } else { [_poll invalidate]; _poll = nil; }
+}
+- (void)dealloc { [_blur stopAnimation:YES]; [_poll invalidate]; }
+
+/// Follows the playing track (and the play order) while the sheet stays open.
+- (void)syncFromProvider {
+    if (!self.provider || _closing) return;
+    NSDictionary *d = self.provider();
+    NSArray *t = d[@"titles"]; NSInteger cur = [d[@"current"] integerValue];
+    if (![t isKindOfClass:NSArray.class] || !t.count) return;
+    BOOL changed = cur != self.current || ![t isEqualToArray:self.titles];
+    if (!changed) return;
+    self.titles = t; self.current = cur;
+    [self.table reloadData];
+}
+
+- (CGFloat)sheetHeight {
+    CGFloat H = self.bounds.size.height - self.safeAreaInsets.bottom - 8;
+    CGFloat h = MIN(H, MAX(H * 0.66, 400));
+    if (self.bounds.size.height < self.bounds.size.width) h = MIN(self.bounds.size.height - 30, 340);   // landscape
+    return h;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect b = self.bounds;
+    CGFloat side = 8, sh = [self sheetHeight], W = MIN(b.size.width - 2 * side, 640);
+    self.card.bounds = CGRectMake(0, 0, W, sh);   // placed by bounds and center so a drag in progress is not disturbed
+    self.card.center = CGPointMake(b.size.width / 2, b.size.height - self.safeAreaInsets.bottom - 8 - sh / 2);
+    self.card.contentView.frame = self.card.bounds;
+    self.header.frame = CGRectMake(0, 0, W, 62);
+    self.grab.frame = CGRectMake(W / 2 - 19, 8, 38, 5);
+    self.head.frame = CGRectMake(22, 18, W - 90, 28);
+    self.closeB.frame = CGRectMake(W - 60, 10, 44, 44);
+    self.table.frame = CGRectMake(0, 62, W, sh - 62);
+}
+
+// Only a tap outside the card closes the sheet, so taps on the list reach the rows. The drag only starts downward.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)t {
+    if ([g isKindOfClass:UIPanGestureRecognizer.class]) return YES;
+    return !CGRectContainsPoint(self.card.frame, [t locationInView:self]);
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)g {
+    if (![g isKindOfClass:UIPanGestureRecognizer.class]) return YES;
+    CGPoint v = [(UIPanGestureRecognizer *)g velocityInView:self];
+    return fabs(v.y) > fabs(v.x) && v.y > -50;
+}
+
+- (void)dragged:(UIPanGestureRecognizer *)g {
+    CGFloat dy = MAX(0, [g translationInView:self].y);
+    if (g.state == UIGestureRecognizerStateChanged) {
+        self.card.transform = CGAffineTransformMakeTranslation(0, dy);
+    } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        CGFloat vy = [g velocityInView:self].y;
+        if (g.state == UIGestureRecognizerStateEnded && (dy > self.card.bounds.size.height * 0.25 || vy > 900)) {
+            [self dismiss];
+        } else {
+            [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0 options:0 animations:^{ self.card.transform = CGAffineTransformIdentity; } completion:nil];
+        }
+    }
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return (NSInteger)self.titles.count; }
+
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"t"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"t"];
+    BOOL now = ip.row == self.current;
+    c.backgroundColor = now ? [VGAccent colorWithAlphaComponent:0.16] : UIColor.clearColor;
+    c.selectionStyle = UITableViewCellSelectionStyleNone;
+    c.textLabel.text = self.titles[ip.row];
+    c.textLabel.font = [UIFont systemFontOfSize:16 weight:now ? UIFontWeightBold : UIFontWeightSemibold];
+    c.textLabel.textColor = now ? VGAccent : UIColor.whiteColor;
+    c.textLabel.numberOfLines = 2;
+    UILabel *n = [UILabel new];
+    n.frame = CGRectMake(0, 0, 44, 30);
+    n.textAlignment = NSTextAlignmentCenter;
+    if (now) {
+        UIImageView *iv = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightBold]]];
+        iv.tintColor = VGAccent; iv.contentMode = UIViewContentModeCenter; iv.frame = CGRectMake(0, 0, 44, 30);
+        c.accessoryView = iv;
+    } else {
+        n.text = [NSString stringWithFormat:@"%ld", (long)ip.row + 1];
+        n.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold];
+        n.textColor = [UIColor colorWithWhite:1 alpha:0.45];
+        c.accessoryView = n;
+    }
+    return c;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:NO];
+    NSInteger pos = ip.row;
+    [[UIImpactFeedbackGenerator new] impactOccurred];
+    if (pos == self.current) return;
+    self.current = pos;            // highlight it at once; the list stays open so you can pick again
+    [self.table reloadData];
+    if (self.onPick) self.onPick(pos);
+}
+
+- (void)dismiss { [self closeThen:nil]; }
+
+// Slides away the same way the Library player does.
+- (void)closeThen:(void (^)(void))after {
+    if (_closing) return;
+    _closing = YES;
+    CGFloat sh = self.card.bounds.size.height;
+    [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+        self.card.transform = CGAffineTransformMakeTranslation(0, sh + 40);
+    } completion:^(BOOL f) { [self removeFromSuperview]; if (after) after(); }];
+}
+
+// Slides up the same way the Library player does.
+- (void)presentIn:(UIView *)host {
+    self.frame = host.bounds;
+    self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [host addSubview:self];
+    [self layoutIfNeeded];
+    if (self.current >= 0 && self.current < (NSInteger)self.titles.count)
+        [self.table scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:self.current inSection:0] atScrollPosition:UITableViewScrollPositionMiddle animated:NO];
+    CGFloat sh = self.card.bounds.size.height;
+    self.card.transform = CGAffineTransformMakeTranslation(0, sh + 40);
+    [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.86 initialSpringVelocity:0.2 options:UIViewAnimationOptionAllowUserInteraction animations:^{
+        self.card.transform = CGAffineTransformIdentity;
+    } completion:nil];
+}
+
+@end
+
 #pragma mark Banner shown while the picture is off
 
 @interface VGBannerView : UIView
@@ -505,6 +729,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 @implementation VGBannerView {
     CAGradientLayer *_glow, *_vignette;
+    UIImageView *_pic; UILabel *_name, *_sub;
+    NSLayoutConstraint *_iconW, *_iconH, *_stackY;
 }
 
 - (instancetype)initWithFrame:(CGRect)f {
@@ -523,7 +749,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         UIImageView *pic = [[UIImageView alloc] initWithImage:icon];
         pic.contentMode = UIViewContentModeScaleAspectFill;
         pic.clipsToBounds = YES;
-        pic.layer.cornerRadius = 27;
+        pic.layer.cornerRadius = 27; _pic = pic;
         pic.layer.cornerCurve = kCACornerCurveContinuous;
         pic.translatesAutoresizingMaskIntoConstraints = NO;
         UIView *iv = [UIView new];   // holds the glow; the picture inside has the rounded corners
@@ -538,11 +764,11 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         UILabel *name = [UILabel new];
         name.text = @"VidGrab";
         name.textColor = UIColor.whiteColor;
-        name.font = VGRounded(34, UIFontWeightHeavy);
+        name.font = VGRounded(34, UIFontWeightHeavy); _name = name;
         UILabel *sub = [UILabel new];
         sub.text = @"By: T4MAG0";
         sub.textColor = VGSecondary;
-        sub.font = VGFont(13, UIFontWeightSemibold);
+        sub.font = VGFont(13, UIFontWeightSemibold); _sub = sub;
         UIStackView *st = [[UIStackView alloc] initWithArrangedSubviews:@[iv, name, sub]];
         st.axis = UILayoutConstraintAxisVertical;
         st.alignment = UIStackViewAlignmentCenter;
@@ -551,8 +777,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         st.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:st];
         [NSLayoutConstraint activateConstraints:@[
-            [iv.widthAnchor constraintEqualToConstant:120], [iv.heightAnchor constraintEqualToConstant:120],
-            [st.centerXAnchor constraintEqualToAnchor:self.centerXAnchor], [st.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-30]]];
+            (_iconW = [iv.widthAnchor constraintEqualToConstant:120]), (_iconH = [iv.heightAnchor constraintEqualToConstant:120]),
+            [st.centerXAnchor constraintEqualToAnchor:self.centerXAnchor], (_stackY = [st.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-30])]];
 
         // A dark edge on every corner so the logo stands out.
         _vignette = [CAGradientLayer layer];
@@ -573,6 +799,16 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     _glow.frame = self.bounds;
     _vignette.frame = self.bounds;
     [CATransaction commit];
+    // Bigger logo and text in portrait, where there is room; landscape keeps the compact size so nothing overlaps.
+    BOOL portrait = self.bounds.size.height > self.bounds.size.width;
+    CGFloat icon = portrait ? MIN(190, MAX(120, self.bounds.size.width * 0.46)) : 120;
+    if (fabs(_iconW.constant - icon) > 0.5) {
+        _iconW.constant = _iconH.constant = icon;
+        _stackY.constant = portrait ? -52 : -30;
+        _pic.layer.cornerRadius = icon * 0.225;
+        _name.font = VGRounded(icon * 0.283, UIFontWeightHeavy);
+        _sub.font = VGFont(MAX(13, icon * 0.095), UIFontWeightSemibold);
+    }
 }
 
 @end
@@ -583,6 +819,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic, copy) NSString *titleText;
 @property (nonatomic, strong) UIImage *artwork;
 @property (nonatomic, copy) NSString *artistText, *albumText;
+@property (nonatomic, copy) NSString *artFetchURL;   // the picture being fetched for the lock screen
 @property (nonatomic) BOOL audioOnly;
 @property (nonatomic) double speed;
 @property (nonatomic) NSInteger sizeIndex;       // the viewer's choice for landscape (remembered)
@@ -595,6 +832,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic) BOOL onScreenCounted;
 @property (nonatomic) BOOL started;
 @property (nonatomic) BOOL restoring;   // coming back from picture-in-picture to full screen
+@property (nonatomic) BOOL minimized;   // pressed down: still playing in the small bar
 
 @property (nonatomic, strong) VGVideoView *videoView;
 @property (nonatomic, strong) UIView *controls;
@@ -611,6 +849,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic, assign) NSUInteger switchToken;
 @property (nonatomic, assign) BOOL switchPending;
 @property (nonatomic, assign) BOOL preparingHigh;
+@property (nonatomic, strong) VGLiveStream *live;   // 2K and 4K made on the phone while playing
+@property (nonatomic) NSUInteger liveToken;
+@property (nonatomic) BOOL livePending;   // 2K is being prepared: the lower quality stays paused
+@property (nonatomic) double liveOffset;   // second of the video where the live picture begins
 @property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayerItem *> *warmItems;   // qualities opened ahead of time, ready to switch to
 @property (nonatomic, strong) NSMutableSet<NSString *> *warming;
 @property (nonatomic, copy) NSString *fpsHint;
@@ -631,11 +873,17 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic, strong) AVPictureInPictureController *pip;
 @property (nonatomic, strong) VGPlayerGestures *gestures;
 @property (nonatomic, strong) NSMutableArray *remoteTokens;
+@property (nonatomic) BOOL wantPlay;
 @property (nonatomic, strong) UIButton *prevTrackButton, *nextTrackButton, *shuffleButton, *repeatButton;
 @property (nonatomic, strong) UIView *audioArtView;
 @property (nonatomic, strong) VGBannerView *bannerView;
 @property (nonatomic, strong) UIButton *videoToggleButton;
 @property (nonatomic, strong) NSLayoutConstraint *midCenterY;
+@property (nonatomic, strong) UIView *topGroup, *bottomGroup;   // slide away when the controls hide
+@property (nonatomic, strong) UIStackView *buttonRow;
+@property (nonatomic, strong) UIView *tracksHolder;
+@property (nonatomic, strong) UIButton *rowTracks;
+@property (nonatomic, strong) UIView *rowSpacer;
 
 @property (nonatomic) BOOL controlsVisible;
 @property (nonatomic) NSInteger hideToken;
@@ -772,6 +1020,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self buildMiniBar];   // last, so it stays on top of the buttons and their shading
     [self rebuildMenus];
     if (self.videoOff) [self applyVideoOff];
+    if (self.playlistMode) {   // speed sticks from one playlist to the next
+        double sp = [NSUserDefaults.standardUserDefaults doubleForKey:@"vgPlaylistSpeed"];
+        if (sp > 0 && sp != 1) [self setSpeed:sp];
+    }
 
     self.gestures = [[VGPlayerGestures alloc] initWithHost:self];
     [self.gestures attach];
@@ -815,11 +1067,46 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     } completion:^(id<UIViewControllerTransitionCoordinatorContext> c) {
         [self layoutVideoAnimated:NO];
         [self rebuildMenus];
+        [self scheduleHide];   // turned sideways: the controls hide after a moment (upright they stay)
     }];
+}
+
+/// Portrait and landscape need different spacing: portrait with a playlist has eight buttons to fit across, and
+/// the play buttons drop below the VidGrab logo when the video is off. Landscape keeps the original layout.
+- (void)updateControlLayout {
+    if (!self.buttonRow) return;
+    BOOL portrait = self.view.bounds.size.height > self.view.bounds.size.width;
+    BOOL tight = portrait && self.playlistMode;
+    self.tracksHolder.hidden = !(self.playlistMode && portrait);
+    self.rowTracks.hidden = !(self.playlistMode && !portrait);
+    CGFloat d = tight ? 36 : 40;
+    self.rowSpacer.hidden = tight;
+    self.buttonRow.distribution = tight ? UIStackViewDistributionEqualSpacing : UIStackViewDistributionFill;
+    self.buttonRow.spacing = tight ? 4 : 12;
+    for (UIButton *b in @[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.saveButton]) {
+        b.layer.cornerRadius = d / 2;
+        for (NSLayoutConstraint *c in b.constraints) {
+            if ((c.firstAttribute == NSLayoutAttributeHeight || (c.firstAttribute == NSLayoutAttributeWidth && c.relation == NSLayoutRelationEqual)) && c.secondItem == nil) c.constant = d;
+        }
+    }
+    self.speedButton.contentEdgeInsets = UIEdgeInsetsMake(0, tight ? 12 : 16, 0, tight ? 12 : 16);
+    for (NSLayoutConstraint *c in self.speedButton.constraints) if (c.firstAttribute == NSLayoutAttributeWidth && c.relation == NSLayoutRelationGreaterThanOrEqual) c.constant = tight ? 46 : 56;
+    BOOL low = self.audioOnly || (self.playlistMode && portrait);   // same spot with the video on or off; the picture plays above them
+    CGFloat want = low ? 150 : 0;
+    UIView *mid = (UIView *)self.midCenterY.firstItem, *host = mid.superview;
+    if (self.playlistMode && portrait && !self.tracksHolder.hidden && host && self.tracksHolder.superview && CGRectGetHeight(self.tracksHolder.frame) > 1) {
+        // Sit just above the Tracks button, as far from the picture as possible.
+        CGFloat top = [self.tracksHolder.superview convertRect:self.tracksHolder.frame toView:host].origin.y;
+        CGFloat half = MAX(CGRectGetHeight(mid.bounds), 72) / 2;
+        want = MAX(150, top - 42 - half - host.bounds.size.height / 2);
+    }
+    if (fabs(self.midCenterY.constant - want) > 0.5) self.midCenterY.constant = want;
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    [self updateControlLayout];
+    if (!self.controlsVisible && [self controlsPinned]) [self setControlsVisible:YES animated:NO];
     [self layoutVideoAnimated:NO];
     CGRect b = self.view.bounds;
     self.miniBar.frame = CGRectMake(0, b.size.height - 3, b.size.width, 3);
@@ -880,6 +1167,9 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         else f = CGRectMake(0, (b.size.height - b.size.width / ratio) / 2, b.size.width, b.size.width / ratio);
     }
     self.videoView.playerLayer.videoGravity = m[@"gravity"];
+    // A playlist held upright keeps its buttons low and in the same place with the video on or off; the picture
+    // moves up a little so it has room above them.
+    if (self.playlistMode && b.size.height > b.size.width && f.size.height < b.size.height - 160) f.origin.y -= 50;
     if (animated) [UIView animateWithDuration:0.25 animations:^{ self.videoView.frame = f; }];
     else self.videoView.frame = f;
 }
@@ -941,7 +1231,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
     // Top: close on the left, picture-in-picture and AirPlay on the right.
     self.closeButton = RoundButton(@"chevron.down", 44, 18);
-    [self.closeButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+    [self.closeButton addTarget:self action:@selector(minimize) forControlEvents:UIControlEventTouchUpInside];
     self.pipButton = RoundButton(@"pip.enter", 44, 18);
     [self.pipButton addTarget:self action:@selector(togglePiP) forControlEvents:UIControlEventTouchUpInside];
     self.routeButton = [[AVRoutePickerView alloc] initWithFrame:CGRectMake(0, 0, 44, 44)];
@@ -987,6 +1277,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     right.alignment = UIStackViewAlignmentCenter;
     right.spacing = 10;
     right.translatesAutoresizingMaskIntoConstraints = NO;
+    self.topGroup = right;
     [c addSubview:self.closeButton];
     [c addSubview:right];
     [NSLayoutConstraint activateConstraints:@[
@@ -1059,44 +1350,79 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.speedButton.titleLabel.font = VGRounded(15, UIFontWeightBold);
     [self.speedButton setTitle:@"1×" forState:UIControlStateNormal];
     self.speedButton.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
-    self.speedButton.layer.cornerRadius = 20;
+    self.speedButton.layer.cornerRadius = 18;
     self.speedButton.layer.borderWidth = 1;
     self.speedButton.layer.borderColor = VGStroke.CGColor;
-    self.speedButton.contentEdgeInsets = UIEdgeInsetsMake(0, 16, 0, 16);
+    self.speedButton.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
     self.speedButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.speedButton.heightAnchor constraintEqualToConstant:40].active = YES;
-    [self.speedButton.widthAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
-    self.sizeButton = RoundButton(@"arrow.up.left.and.arrow.down.right", 40, 16);
-    self.rotateButton = RoundButton(@"rotate.right", 40, 16);
+    [self.speedButton.heightAnchor constraintEqualToConstant:36].active = YES;
+    [self.speedButton.widthAnchor constraintGreaterThanOrEqualToConstant:46].active = YES;
+    self.sizeButton = RoundButton(@"arrow.up.left.and.arrow.down.right", 36, 16);
+    self.rotateButton = RoundButton(@"rotate.right", 36, 16);
     [self.rotateButton addTarget:self action:@selector(rotate) forControlEvents:UIControlEventTouchUpInside];
-    self.captionsButton = RoundButton(@"captions.bubble", 40, 16);
+    self.captionsButton = RoundButton(@"captions.bubble", 36, 16);
     self.captionsButton.hidden = YES;
-    self.saveButton = RoundButton(@"arrow.down.to.line", 40, 16);
+    self.saveButton = RoundButton(@"arrow.down.to.line", 36, 16);
     self.saveButton.hidden = self.streamVideo == nil;
     self.saveButton.accessibilityLabel = @"Download this video";
     [self.saveButton addTarget:self action:@selector(saveStream) forControlEvents:UIControlEventTouchUpInside];
     for (UIButton *b in @[self.speedButton, self.sizeButton, self.captionsButton])
         [b addTarget:self action:@selector(menuOpened) forControlEvents:UIControlEventMenuActionTriggered];
     if (self.audioOnly) { self.sizeButton.hidden = YES; self.rotateButton.hidden = YES; }
-    self.shuffleButton = RoundButton(@"shuffle", 40, 16);
-    self.repeatButton = RoundButton(@"repeat", 40, 16);
+    self.shuffleButton = RoundButton(@"shuffle", 36, 16);
+    self.repeatButton = RoundButton(@"repeat", 36, 16);
     [self.shuffleButton addTarget:self action:@selector(shuffleTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.repeatButton addTarget:self action:@selector(repeatTapped) forControlEvents:UIControlEventTouchUpInside];
-    self.videoToggleButton = RoundButton(@"video.fill", 40, 16);
+    self.videoToggleButton = RoundButton(@"video.fill", 36, 16);
     [self.videoToggleButton addTarget:self action:@selector(toggleVideo) forControlEvents:UIControlEventTouchUpInside];
     self.videoToggleButton.accessibilityLabel = @"Turn video on or off";
     self.shuffleButton.hidden = self.repeatButton.hidden = self.videoToggleButton.hidden = !self.playlistMode;
     [self styleModeButtons];
     UIView *spacer = [UIView new];
     [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow - 1 forAxis:UILayoutConstraintAxisHorizontal];
+    // With the playlist buttons there are eight, so they share the width evenly instead of being squeezed.
     UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.saveButton, spacer]];
     buttons.spacing = 12;
+    self.buttonRow = buttons; self.rowSpacer = spacer;
     buttons.alignment = UIStackViewAlignmentCenter;
 
-    UIStackView *bottomStack = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, scrubRow, buttons]];
+    // Playlist mode: a pill with an up arrow that opens the list of tracks.
+    UIButtonConfiguration *tc = [UIButtonConfiguration plainButtonConfiguration];
+    tc.title = @"Tracks";
+    tc.image = [UIImage systemImageNamed:@"chevron.up" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightBold]];
+    tc.imagePlacement = NSDirectionalRectEdgeLeading;
+    tc.imagePadding = 6;
+    tc.baseForegroundColor = UIColor.whiteColor;
+    tc.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    tc.background.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    tc.background.strokeColor = VGStroke; tc.background.strokeWidth = 1;
+    tc.contentInsets = NSDirectionalEdgeInsetsMake(6, 16, 6, 16);
+    tc.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey,id> *(NSDictionary<NSAttributedStringKey,id> *a) {
+        NSMutableDictionary *d = [a mutableCopy]; d[NSFontAttributeName] = VGRounded(14, UIFontWeightBold); return d; };
+    UIButton *tracksB = [UIButton buttonWithConfiguration:tc primaryAction:nil];
+    tracksB.translatesAutoresizingMaskIntoConstraints = NO;
+    tracksB.accessibilityLabel = @"Show the tracks in this playlist";
+    [tracksB addTarget:self action:@selector(showTracks) forControlEvents:UIControlEventTouchUpInside];
+    UIView *tracksHolder = [UIView new];
+    [tracksHolder addSubview:tracksB];
+    [NSLayoutConstraint activateConstraints:@[
+        [tracksB.centerXAnchor constraintEqualToAnchor:tracksHolder.centerXAnchor], [tracksB.topAnchor constraintEqualToAnchor:tracksHolder.topAnchor],
+        [tracksB.bottomAnchor constraintEqualToAnchor:tracksHolder.bottomAnchor constant:-2], [tracksHolder.heightAnchor constraintEqualToConstant:34]]];
+    tracksHolder.hidden = !self.playlistMode;
+    self.tracksHolder = tracksHolder;
+    // Landscape: the same button sits in the bottom row, right beside the download button.
+    UIButton *rowTracks = [UIButton buttonWithConfiguration:tc primaryAction:nil];
+    rowTracks.translatesAutoresizingMaskIntoConstraints = NO;
+    [rowTracks.heightAnchor constraintEqualToConstant:40].active = YES;
+    rowTracks.accessibilityLabel = @"Show the tracks in this playlist";
+    [rowTracks addTarget:self action:@selector(showTracks) forControlEvents:UIControlEventTouchUpInside];
+    [buttons insertArrangedSubview:rowTracks atIndex:[buttons.arrangedSubviews indexOfObject:self.saveButton] + 1];
+    self.rowTracks = rowTracks;
+    UIStackView *bottomStack = [[UIStackView alloc] initWithArrangedSubviews:@[tracksHolder, self.titleLabel, scrubRow, buttons]];
     bottomStack.axis = UILayoutConstraintAxisVertical;
     bottomStack.spacing = 6;
     bottomStack.translatesAutoresizingMaskIntoConstraints = NO;
+    self.bottomGroup = bottomStack;
     [c addSubview:bottomStack];
     [NSLayoutConstraint activateConstraints:@[
         [bottomStack.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:22],
@@ -1134,6 +1460,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (void)setSpeed:(double)speed {
     _speed = speed;
+    if (self.playlistMode) [NSUserDefaults.standardUserDefaults setDouble:speed forKey:@"vgPlaylistSpeed"];
     if (self.keptPlayer.timeControlStatus != AVPlayerTimeControlStatusPaused) self.keptPlayer.rate = (float)speed;
     NSString *t = speed == 1.0 ? @"1×" : [NSString stringWithFormat:@"%g×", speed];
     [self.speedButton setTitle:t forState:UIControlStateNormal];
@@ -1163,17 +1490,28 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (void)tapped { [self setControlsVisible:!self.controlsVisible animated:YES]; if (self.controlsVisible) [self scheduleHide]; }
 
+/// A streamed playlist held upright keeps its buttons on screen (like a music player), so they never hide.
+- (BOOL)controlsPinned {
+    return self.playlistMode && self.view.bounds.size.height > self.view.bounds.size.width;
+}
+
 - (void)setControlsVisible:(BOOL)visible animated:(BOOL)animated {
+    if (!visible && [self controlsPinned]) visible = YES;
     self.controlsVisible = visible;
     if (visible) [self tick];
     self.controls.userInteractionEnabled = visible;
-    [UIView animateWithDuration:animated ? 0.25 : 0 animations:^{
+    // Hiding: the top buttons slide up and fade, the bottom ones slide down and fade. Showing runs the same in reverse.
+    CGAffineTransform up = CGAffineTransformMakeTranslation(0, -36), down = CGAffineTransformMakeTranslation(0, 48);
+    [UIView animateWithDuration:animated ? 0.3 : 0 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState animations:^{
         self.controls.alpha = visible ? 1 : 0;
+        self.closeButton.transform = visible ? CGAffineTransformIdentity : up;
+        self.topGroup.transform = visible ? CGAffineTransformIdentity : up;
+        self.bottomGroup.transform = visible ? CGAffineTransformIdentity : down;
         self.subtitleBottom.constant = visible ? -150 : -26;
         [self.view layoutIfNeeded];
         [self setNeedsStatusBarAppearanceUpdate];
         [self setNeedsUpdateOfHomeIndicatorAutoHidden];
-    }];
+    } completion:nil];
     [self applyMiniBarAnimated:animated];
 }
 
@@ -1189,7 +1527,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (void)scheduleHide {
     NSInteger token = ++self.hideToken;
-    if (self.audioOnly || self.scrubbing || self.keptPlayer.timeControlStatus == AVPlayerTimeControlStatusPaused) return;
+    BOOL portrait = self.view.bounds.size.height > self.view.bounds.size.width;
+    if ((self.audioOnly && portrait) || self.scrubbing || [self controlsPinned] || self.keptPlayer.timeControlStatus == AVPlayerTimeControlStatusPaused) return;   // landscape always hides after a moment
     __weak typeof(self) ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         VGPlayerViewController *me = ws;
@@ -1243,20 +1582,21 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldReceiveTouch:(UITouch *)touch {
     for (UIView *v = touch.view; v && v != g.view; v = v.superview)
-        if ([v isKindOfClass:UIControl.class] || [NSStringFromClass(v.class) isEqualToString:@"VGSaveCard"]) return NO;   // buttons and the save card handle their own touches
+        if ([v isKindOfClass:UIControl.class] || [NSStringFromClass(v.class) isEqualToString:@"VGSaveCard"] || [NSStringFromClass(v.class) isEqualToString:@"VGTrackSheet"]) return NO;   // buttons, the save card and the track list handle their own touches
     return YES;
 }
 
 #pragma mark Playing
 
 - (double)duration {
+    if (self.live && self.live.duration > 0) return self.live.duration;
     double s = CMTimeGetSeconds(self.keptPlayer.currentItem.duration);
     return isfinite(s) && s > 0 ? s : 0;
 }
 
 - (double)position {
     double s = CMTimeGetSeconds(self.keptPlayer.currentTime);
-    return isfinite(s) ? MAX(0, s) : 0;
+    return isfinite(s) ? MAX(0, s) + self.liveOffset : 0;
 }
 
 - (BOOL)isPlaying { return self.keptPlayer.timeControlStatus != AVPlayerTimeControlStatusPaused; }
@@ -1271,6 +1611,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)pausePlayback {
+    self.wantPlay = NO;
     [self.keptPlayer pause];
     [self refreshPlayState];
     [self showControls];
@@ -1282,7 +1623,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 - (void)skip:(double)delta {
     double dur = [self duration];
     double to = MIN(MAX([self position] + delta, 0), dur > 0 ? dur : 0);
-    [self.keptPlayer seekToTime:CMTimeMakeWithSeconds(to, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    [self.keptPlayer seekToTime:CMTimeMakeWithSeconds(MAX(0, to - self.liveOffset), 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
     [self tickWithPosition:to];
     [self showControls];
     [self updateNowPlaying];
@@ -1423,8 +1764,69 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     }
 }
 
+- (void)stopLive {
+    self.liveToken++;
+    self.livePending = NO;
+    [self.live stop];
+    self.live = nil;
+    self.liveOffset = 0;
+}
+
+/// 2K and 4K (VP9): decoded and re-encoded on the phone while playing. Starts from the beginning.
+- (void)playLiveOption:(VGOption *)opt {
+    double from = [self position];   // 2K carries on from the second the viewer is at
+    [self stopLive];
+    self.livePending = YES;
+    [self.keptPlayer pause];
+    NSUInteger tk = self.liveToken;
+    self.streamOption = opt;
+    self.fpsHint = FPSFromRes(opt.res);
+    [self.qualityLabel setTitle:[NSString stringWithFormat:@"%@ …", opt.res] forState:UIControlStateNormal];
+    [self toast:[NSString stringWithFormat:@"Getting %@ ready. It starts in a few seconds", opt.res] icon:@"hourglass"];
+    __weak typeof(self) ws = self;
+    [[VGEngine shared] liveLinkFor:self.streamVideo option:opt completion:^(NSDictionary *info, NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!ws || ws.liveToken != tk) return;
+            NSDictionary *v = info[@"video"];
+            if (![v isKindOfClass:NSDictionary.class] || !v[@"url"]) {
+                [ws toast:error.length ? error : @"Couldn't get that quality" icon:@"exclamationmark.circle"];
+                [ws offerDownloadFor:opt];
+                return;
+            }
+            NSDictionary *a = [info[@"audio"] isKindOfClass:NSDictionary.class] ? info[@"audio"] : nil;
+            VGLiveStream *ls = [[VGLiveStream alloc] initWithVideo:v audio:a fps:[v[@"fps"] doubleValue] duration:[info[@"duration"] doubleValue]];
+            ls.startAt = from;
+            ws.live = ls;
+            [ls startWithReady:^(NSURL *playlist) {
+                if (ws.liveToken != tk) return;
+                AVPlayer *pl = ws.keptPlayer;
+                BOOL playing = pl.timeControlStatus != AVPlayerTimeControlStatusPaused;
+                ws.livePending = NO;
+                ws.liveOffset = from > 1 ? from : 0;
+                AVPlayerItem *item = [AVPlayerItem playerItemWithURL:playlist];
+                item.preferredForwardBufferDuration = 3;
+                ws.shownQualityHeight = 0;
+                ws.streamFailed = NO;
+                ws.streamMaster = NO;
+                [pl replaceCurrentItemWithPlayerItem:item];
+                [pl play]; (void)playing;
+                [ws buildQualityMenu];
+            } failed:^(NSString *err) {
+                if (ws.liveToken != tk) return;
+                [ws stopLive];
+                [ws toast:err.length ? err : @"Couldn't convert that quality" icon:@"exclamationmark.circle"];
+                [ws offerDownloadFor:opt];
+            }];
+        });
+    }];
+}
+
 - (void)switchToOption:(VGOption *)opt {
-    if (opt.convert && ![self variantFor:opt]) { [self offerDownloadFor:opt]; return; }
+    if (opt.convert && ![self variantFor:opt]) {
+        [self playLiveOption:opt];
+        return;
+    }
+    [self stopLive];
     self.preparingHigh = NO;
     if ([opt.identifier isEqualToString:self.streamOption.identifier]) return;
     NSInteger want = OptHeight(opt);
@@ -1545,6 +1947,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)tickWithPosition:(double)pos {
+    if (self.livePending && self.keptPlayer.timeControlStatus != AVPlayerTimeControlStatusPaused) [self.keptPlayer pause];
     if (CACurrentMediaTime() - self.lastHeatCheck > 3) { self.lastHeatCheck = CACurrentMediaTime(); [self refreshHeat]; }
     if (self.streamVideo && !self.streamFailed && self.keptPlayer.currentItem.status == AVPlayerItemStatusFailed) {
         self.streamFailed = YES;
@@ -1555,6 +1958,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         [a addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { [ws close]; }]];
         [self presentViewController:a animated:YES completion:nil];
     }
+    if (self.live) self.live.playhead = MAX(0, pos - self.liveOffset);
     [self updateMiniBar:pos];
     [self updateQualityLabel];
     if (self.subs) {
@@ -1581,7 +1985,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 - (void)scrubToSeconds:(double)seconds {
     double dur = [self duration];
     seconds = MIN(MAX(seconds, 0), dur);
-    self.chaseTime = CMTimeMakeWithSeconds(seconds, 600);
+    self.chaseTime = CMTimeMakeWithSeconds(MAX(0, seconds - self.liveOffset), 600);
     [self updateMiniBar:seconds];
     if (self.subs) [self refreshSubtitleAt:seconds];
     [self chase];
@@ -1625,6 +2029,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 - (void)start {
     if (self.started) return;
     self.started = YES;
+    [VGMiniVideoView closeOthersThan:self];
+    [VGMusicPlayer.shared pause];   // the Library's music bar gives way to a video
     gOpenPlayers++;
     self.counted = YES;
     [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeMoviePlayback options:0 error:nil];
@@ -1638,10 +2044,11 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
     __weak typeof(self) ws = self;
     self.timeObserver = [pl addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.25, 600) queue:dispatch_get_main_queue()
-                                                    usingBlock:^(CMTime t) { [ws tick]; }];
+                                                    usingBlock:^(CMTime t) { if (ws.keptPlayer.rate > 0) ws.wantPlay = YES; [ws tick]; }];
     self.saveObserver = [pl addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(5, 1) queue:dispatch_get_main_queue()
                                                     usingBlock:^(CMTime t) { [ws savePosition]; [ws updateNowPlaying]; }];
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserver:self selector:@selector(audioInterrupted:) name:AVAudioSessionInterruptionNotification object:nil];
     [nc addObserver:self selector:@selector(toBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [nc addObserver:self selector:@selector(toForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
     [nc addObserver:self selector:@selector(finished:) name:AVPlayerItemDidPlayToEndTimeNotification object:pl.currentItem];
@@ -1654,10 +2061,21 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 
+/// The down arrow: the player goes away but the video keeps playing in a small bar, like the YouTube app.
+- (void)minimize {
+    if (!self.started || self.pip.isPictureInPictureActive || !self.keptPlayer.currentItem) { [self close]; return; }
+    self.minimized = YES;
+    __weak typeof(self) ws = self;
+    [self dismissViewControllerAnimated:YES completion:^{
+        VGPlayerViewController *me = ws;
+        if (me && me.minimized) [VGMiniVideoView showFor:me];
+    }];
+}
+
 - (void)savePosition {
     AVPlayer *pl = self.keptPlayer;
     if (!pl.currentItem || !self.key) return;
-    double now = CMTimeGetSeconds(pl.currentTime), total = CMTimeGetSeconds(pl.currentItem.duration);
+    double now = CMTimeGetSeconds(pl.currentTime) + self.liveOffset, total = self.live ? self.live.duration : CMTimeGetSeconds(pl.currentItem.duration);
     NSMutableDictionary *d = [[NSUserDefaults.standardUserDefaults dictionaryForKey:[VGPlayerViewController positionsKey]] mutableCopy] ?: [NSMutableDictionary dictionary];
     // Near the start or the end: nothing to resume.
     if (!(now > 5) || (total > 0 && now > total - 10)) [d removeObjectForKey:self.key];
@@ -1683,6 +2101,18 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     if (!self.inPiP && !self.pip.isPictureInPictureActive && self.keptPlayer.rate > 0) self.videoView.playerLayer.player = nil;
 }
 
+/// A call or another app's sound stops the video; carry on afterwards if it was playing.
+- (void)audioInterrupted:(NSNotification *)n {
+    NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    if (type != AVAudioSessionInterruptionTypeEnded || !self.wantPlay) return;
+    __weak typeof(self) ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!ws || !ws.wantPlay || ws.keptPlayer.rate > 0) return;
+        [AVAudioSession.sharedInstance setActive:YES error:nil];
+        [ws resume];
+    });
+}
+
 - (void)toForeground {
     if (self.videoView.playerLayer.player != self.keptPlayer) self.videoView.playerLayer.player = self.keptPlayer;
 }
@@ -1692,12 +2122,13 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     if (self.onScreenCounted) { self.onScreenCounted = NO; gOnScreen = MAX(0, gOnScreen - 1); }
     [self savePosition];
     [self.gestures restoreBrightness];   // brightness goes back to normal when the player leaves the screen
-    if (!self.inPiP && !self.restoring) [self shutDown];
+    if (!self.inPiP && !self.restoring && !self.minimized) [self shutDown];
     dispatch_async(dispatch_get_main_queue(), ^{ [UIViewController attemptRotationToDeviceOrientation]; });   // back to upright
 }
 
 - (void)shutDown {
     gPreparing = NO;
+    [self stopLive];
     [self stopSubtitles];
     [self.gestures detach];
     self.gestures = nil;
@@ -1727,17 +2158,24 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     cc.skipBackwardCommand.preferredIntervals = @[@10];
     add(cc.skipForwardCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [ws skip:10]; return MPRemoteCommandHandlerStatusSuccess; });
     add(cc.skipBackwardCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [ws skip:-10]; return MPRemoteCommandHandlerStatusSuccess; });
-    cc.nextTrackCommand.enabled = cc.previousTrackCommand.enabled = NO;
-    if (self.playlistMode) {
-        add(cc.nextTrackCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [ws nextTrack]; return MPRemoteCommandHandlerStatusSuccess; });
-        add(cc.previousTrackCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { [ws previousTrack]; return MPRemoteCommandHandlerStatusSuccess; });
-    }
+    add(cc.nextTrackCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { if (!ws.playlistMode) return MPRemoteCommandHandlerStatusCommandFailed; [ws nextTrack]; return MPRemoteCommandHandlerStatusSuccess; });
+    add(cc.previousTrackCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) { if (!ws.playlistMode) return MPRemoteCommandHandlerStatusCommandFailed; [ws previousTrack]; return MPRemoteCommandHandlerStatusSuccess; });
+    [self refreshRemoteMode];
     add(cc.changePlaybackPositionCommand, ^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *e) {
         double to = ((MPChangePlaybackPositionCommandEvent *)e).positionTime;
-        [ws.keptPlayer seekToTime:CMTimeMakeWithSeconds(to, 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        [ws.keptPlayer seekToTime:CMTimeMakeWithSeconds(MAX(0, to - ws.liveOffset), 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
         [ws updateNowPlaying];
         return MPRemoteCommandHandlerStatusSuccess;
     });
+}
+
+/// Playlists get previous/next on the lock screen; single videos keep the 10 second buttons.
+- (void)refreshRemoteMode {
+    if (!self.remoteTokens) return;
+    MPRemoteCommandCenter *cc = MPRemoteCommandCenter.sharedCommandCenter;
+    BOOL pl = self.playlistMode;
+    cc.nextTrackCommand.enabled = cc.previousTrackCommand.enabled = pl;
+    cc.skipForwardCommand.enabled = cc.skipBackwardCommand.enabled = !pl;
 }
 
 - (void)teardownRemote {
@@ -1746,6 +2184,39 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     MPRemoteCommandCenter.sharedCommandCenter.nextTrackCommand.enabled = NO;
     MPRemoteCommandCenter.sharedCommandCenter.previousTrackCommand.enabled = NO;
     MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo = nil;
+}
+
+/// Tries each picture address in turn; the first one that is a real image becomes the lock screen cover.
+- (void)fetchArtworkFrom:(NSArray<NSString *> *)urls index:(NSUInteger)i key:(NSString *)key owner:(VGPlayerViewController *)owner {
+    __weak typeof(self) ws = self;
+    void (^retryLater)(void) = ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            VGPlayerViewController *me = ws;
+            if (me && !me.artwork && [me.artFetchURL isEqualToString:key]) { me.artFetchURL = nil; [me updateNowPlaying]; }   // another go
+        });
+    };
+    if (i >= urls.count) { retryLater(); return; }
+    NSURL *u = [NSURL URLWithString:urls[i]];
+    if (!u) { [self fetchArtworkFrom:urls index:i + 1 key:key owner:owner]; return; }
+    [[NSURLSession.sharedSession dataTaskWithURL:u completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
+        NSInteger code = [r isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)r).statusCode : 200;
+        UIImage *img = (data && code < 400) ? [UIImage imageWithData:data] : nil;
+        if (!img || img.size.width < 40) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [ws fetchArtworkFrom:urls index:i + 1 key:key owner:ws]; });
+            return;
+        }
+        CGFloat side = MIN(img.size.width, img.size.height);
+        CGRect crop = CGRectMake((img.size.width - side) / 2 * img.scale, (img.size.height - side) / 2 * img.scale, side * img.scale, side * img.scale);
+        CGImageRef cg = CGImageCreateWithImageInRect(img.CGImage, crop);
+        UIImage *sq = cg ? [UIImage imageWithCGImage:cg scale:img.scale orientation:img.imageOrientation] : img;
+        if (cg) CGImageRelease(cg);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            VGPlayerViewController *me = ws;
+            if (!me || ![me.artFetchURL isEqualToString:key] || me.artwork) return;   // another song started meanwhile
+            me.artwork = sq;
+            [me updateNowPlaying];
+        });
+    }] resume];
 }
 
 - (void)updateNowPlaying {
@@ -1758,6 +2229,27 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @([self position]);
     info[MPNowPlayingInfoPropertyPlaybackRate] = @([self isPlaying] ? self.speed : 0);
     info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = @1.0;
+    if (self.streamVideo && !self.artistText.length && self.streamVideo.uploader.length) info[MPMediaItemPropertyArtist] = self.streamVideo.uploader;
+    // A streamed song has no saved cover: use the video's own picture (square, from the middle) on the lock screen.
+    // If the first address doesn't give a picture, the site's standard picture for that video is tried, and the whole
+    // thing is tried again a little later instead of staying grey for the rest of the song.
+    NSString *turl = self.streamVideo.thumbnail;
+    NSString *vurl = self.streamVideo.url;
+    if (!self.artwork && (turl.length || vurl.length) && ![self.artFetchURL isEqualToString:turl ?: vurl]) {
+        NSString *key = turl ?: vurl;
+        self.artFetchURL = key;
+        NSMutableArray<NSString *> *cands = [NSMutableArray array];
+        if (turl.length) [cands addObject:turl];
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"(?:v=|youtu\\.be/|shorts/)([\\w-]{11})" options:0 error:nil];
+        NSTextCheckingResult *m = vurl.length ? [re firstMatchInString:vurl options:0 range:NSMakeRange(0, vurl.length)] : nil;
+        if (m) {
+            NSString *vid = [vurl substringWithRange:[m rangeAtIndex:1]];
+            [cands addObject:[NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/hqdefault.jpg", vid]];
+            [cands addObject:[NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/mqdefault.jpg", vid]];
+        }
+        __weak typeof(self) ws = self;
+        [self fetchArtworkFrom:cands index:0 key:key owner:ws];
+    }
     UIImage *art = self.artwork;
     if (art) info[MPMediaItemPropertyArtwork] = [[MPMediaItemArtwork alloc] initWithBoundsSize:art.size requestHandler:^UIImage *(CGSize s) { return art; }];
     MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo = info;
@@ -1769,6 +2261,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     _playlistMode = on;
     self.prevTrackButton.hidden = self.nextTrackButton.hidden = !on;
     self.shuffleButton.hidden = self.repeatButton.hidden = self.videoToggleButton.hidden = !on;
+    [self refreshRemoteMode];
+    [self updateControlLayout];
 }
 
 - (void)styleModeButtons {
@@ -1805,6 +2299,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.bannerView.hidden = !off;
     self.audioArtView.hidden = off || !self.audioOnly;
     self.pipButton.hidden = off || self.pip == nil;
+    [self updateControlLayout];
     SetSymbol(self.videoToggleButton, off ? @"video.slash.fill" : @"video.fill", 16);
     self.videoToggleButton.tintColor = off ? VGAccent : UIColor.whiteColor;
     [self syncVideoTracks];
@@ -1831,6 +2326,33 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self showMessage:@[@"Repeat off", @"Repeat all", @"Repeat one"][self.repeatMode]];
     if (self.onModeChange) self.onModeChange(self.shuffleOn, self.repeatMode);
     [self showControls];
+}
+
+- (CGFloat)trackSheetLift {
+    for (UIView *v in self.view.subviews) if ([v isKindOfClass:VGTrackSheet.class]) return ((VGTrackSheet *)v).card.bounds.size.height + 20;
+    return 0;
+}
+
+/// Short messages ("Opening 3 of 81..."): top centre, level with the top buttons in landscape and just under them in
+/// portrait; above the Tracks list when that is open, so it is never hidden behind it.
+- (void)say:(NSString *)text icon:(NSString *)icon {
+    CGFloat sheet = [self trackSheetLift];
+    BOOL portrait = self.view.bounds.size.height > self.view.bounds.size.width;
+    if (sheet > 0) [VGActions toast:text icon:icon in:self.view bottom:sheet];
+    else [VGActions toast:text icon:icon in:self.view top:portrait ? 62 : 8];
+}
+
+- (void)showTracks {
+    if (!self.trackProvider) return;
+    NSDictionary *d = self.trackProvider();
+    NSArray *titles = d[@"titles"];
+    if (![titles isKindOfClass:NSArray.class] || !titles.count) return;
+    for (UIView *v in self.view.subviews) if ([v isKindOfClass:VGTrackSheet.class]) return;
+    VGTrackSheet *sheet = [[VGTrackSheet alloc] initWithTitles:titles current:[d[@"current"] integerValue]];
+    __weak typeof(self) ws = self;
+    sheet.provider = self.trackProvider;
+    sheet.onPick = ^(NSInteger pos) { if (ws.onPickTrack) ws.onPickTrack(pos); [ws showControls]; };
+    [sheet presentIn:self.view];
 }
 
 - (void)nextTrack { if (self.onSkip) self.onSkip(self, 1); [self showControls]; }
@@ -1865,6 +2387,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self.warmItems removeAllObjects];
     [self.warming removeAllObjects];
     self.streamVideo = video;
+    self.artwork = nil; self.artFetchURL = nil;   // the last song's picture is not this one's
     self.streamOption = nil;
     self.fpsHint = nil;
     self.streamFailed = NO;
@@ -1882,6 +2405,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.audioArtView.hidden = !audio || self.videoOff;
     self.sizeButton.hidden = self.rotateButton.hidden = audio;
     self.midCenterY.constant = audio ? 150 : 0;
+    [self updateControlLayout];
     self.qualityLabel.hidden = YES;
     self.saveButton.hidden = NO;
     [pl replaceCurrentItemWithPlayerItem:item];
@@ -2040,6 +2564,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         }];
         return;
     }
+    VGOption *autoOpt = [VGDownloadDefaults autoPickFrom:self.streamVideo.options];   // Settings > Downloads
+    if (autoOpt) { [self startSave:autoOpt]; return; }
     for (UIView *v in self.view.subviews) if ([v isKindOfClass:VGSaveCard.class]) return;
     VGSaveCard *card = [[VGSaveCard alloc] initWithVideo:self.streamVideo playing:self.streamOption];
     __weak typeof(self) ws = self;
@@ -2167,6 +2693,183 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     UIViewController *top = win.rootViewController;
     while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) top = top.presentedViewController;
     return top;
+}
+
+@end
+
+#pragma mark - The small bar
+
+static VGMiniVideoView *gMiniBar;
+
+@interface VGMiniVideoView ()
+@property (nonatomic, strong) VGPlayerViewController *player;
+@property (nonatomic, strong) AVPlayerLayer *picture;
+@property (nonatomic, strong) UIView *pictureHolder, *progress;
+@property (nonatomic, strong) UILabel *titleLabel, *stateLabel;
+@property (nonatomic, strong) UIButton *playB, *closeB;
+@property (nonatomic, strong) NSTimer *timer;
+@end
+
+@implementation VGMiniVideoView
+
++ (BOOL)activeFor:(VGPlayerViewController *)player { return gMiniBar && gMiniBar.player == player; }
+
++ (void)closeOthersThan:(VGPlayerViewController *)player {
+    if (gMiniBar && gMiniBar.player != player) [gMiniBar closeNow];
+}
+
++ (void)showFor:(VGPlayerViewController *)player {
+    if (gMiniBar) { if (gMiniBar.player == player) return; [gMiniBar closeNow]; }
+    UIWindow *win = nil;
+    for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+        if (![sc isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)sc).windows) if (w.isKeyWindow) win = w;
+    }
+    if (!win) { [player shutDown]; return; }
+    VGMiniVideoView *m = [[VGMiniVideoView alloc] initWithPlayer:player];
+    UIViewController *root = win.rootViewController;
+    UIView *host = win;
+    NSLayoutYAxisAnchor *bottom = win.safeAreaLayoutGuide.bottomAnchor;
+    CGFloat gap = -8;
+    if ([root isKindOfClass:UITabBarController.class]) {
+        UITabBarController *tbc = (UITabBarController *)root;
+        host = tbc.view; bottom = tbc.tabBar.topAnchor; gap = -8;
+    }
+    m.translatesAutoresizingMaskIntoConstraints = NO;
+    [host addSubview:m];
+    [NSLayoutConstraint activateConstraints:@[
+        [m.leadingAnchor constraintEqualToAnchor:host.leadingAnchor constant:10], [m.trailingAnchor constraintEqualToAnchor:host.trailingAnchor constant:-10],
+        [m.bottomAnchor constraintEqualToAnchor:bottom constant:gap], [m.heightAnchor constraintEqualToConstant:66]]];
+    gMiniBar = m;
+    m.alpha = 0; m.transform = CGAffineTransformMakeTranslation(0, 24);
+    [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0 options:0 animations:^{ m.alpha = 1; m.transform = CGAffineTransformIdentity; } completion:nil];
+}
+
+- (instancetype)initWithPlayer:(VGPlayerViewController *)player {
+    if (!(self = [super initWithFrame:CGRectZero])) return nil;
+    self.player = player;
+    self.backgroundColor = VGSurface2;
+    self.layer.cornerRadius = 16;
+    self.layer.cornerCurve = kCACornerCurveContinuous;
+    self.layer.borderWidth = 1;
+    self.layer.borderColor = VGStroke.CGColor;
+    self.layer.shadowColor = UIColor.blackColor.CGColor;
+    self.layer.shadowOpacity = 0.35; self.layer.shadowRadius = 10; self.layer.shadowOffset = CGSizeMake(0, 3);
+
+    self.pictureHolder = [UIView new];
+    self.pictureHolder.backgroundColor = UIColor.blackColor;
+    self.pictureHolder.layer.cornerRadius = 9;
+    self.pictureHolder.layer.cornerCurve = kCACornerCurveContinuous;
+    self.pictureHolder.clipsToBounds = YES;
+    self.pictureHolder.translatesAutoresizingMaskIntoConstraints = NO;
+    self.picture = [AVPlayerLayer playerLayerWithPlayer:player.keptPlayer];
+    self.picture.videoGravity = AVLayerVideoGravityResizeAspect;
+    [self.pictureHolder.layer addSublayer:self.picture];
+
+    self.titleLabel = [UILabel new]; self.titleLabel.font = VGFont(14, UIFontWeightSemibold); self.titleLabel.textColor = VGText;
+    self.titleLabel.text = player.titleText.length ? player.titleText : @"Video";
+    self.stateLabel = [UILabel new]; self.stateLabel.font = VGFont(12, UIFontWeightMedium); self.stateLabel.textColor = VGSecondary;
+    UIStackView *labels = [[UIStackView alloc] initWithArrangedSubviews:@[self.titleLabel, self.stateLabel]];
+    labels.axis = UILayoutConstraintAxisVertical; labels.spacing = 2;
+    labels.translatesAutoresizingMaskIntoConstraints = NO;
+
+    self.playB = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.closeB = [UIButton buttonWithType:UIButtonTypeSystem];
+    for (UIButton *b in @[self.playB, self.closeB]) { b.tintColor = VGText; b.translatesAutoresizingMaskIntoConstraints = NO; }
+    [self.closeB setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    self.closeB.tintColor = VGSecondary;
+    self.closeB.accessibilityLabel = @"Close video";
+    [self.playB addTarget:self action:@selector(togglePlay) forControlEvents:UIControlEventTouchUpInside];
+    [self.closeB addTarget:self action:@selector(closeNow) forControlEvents:UIControlEventTouchUpInside];
+
+    self.progress = [UIView new];
+    self.progress.backgroundColor = VGAccent;
+    self.progress.layer.cornerRadius = 1.5;
+
+    for (UIView *v in @[self.pictureHolder, labels, self.playB, self.closeB]) [self addSubview:v];
+    [self addSubview:self.progress];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.pictureHolder.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:9],
+        [self.pictureHolder.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.pictureHolder.widthAnchor constraintEqualToConstant:84], [self.pictureHolder.heightAnchor constraintEqualToConstant:48],
+        [labels.leadingAnchor constraintEqualToAnchor:self.pictureHolder.trailingAnchor constant:10],
+        [labels.centerYAnchor constraintEqualToAnchor:self.centerYAnchor constant:-2],
+        [labels.trailingAnchor constraintEqualToAnchor:self.playB.leadingAnchor constant:-4],
+        [self.playB.widthAnchor constraintEqualToConstant:44], [self.playB.heightAnchor constraintEqualToConstant:44],
+        [self.playB.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.playB.trailingAnchor constraintEqualToAnchor:self.closeB.leadingAnchor],
+        [self.closeB.widthAnchor constraintEqualToConstant:40], [self.closeB.heightAnchor constraintEqualToConstant:44],
+        [self.closeB.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [self.closeB.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6],
+    ]];
+    [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(expand)]];
+    UISwipeGestureRecognizer *down = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(closeNow)];
+    down.direction = UISwipeGestureRecognizerDirectionDown;
+    [self addGestureRecognizer:down];
+
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserver:self selector:@selector(toBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [nc addObserver:self selector:@selector(toForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
+    [nc addObserver:self selector:@selector(musicStarted) name:VGMusicChangedNotification object:nil];
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
+    [self refresh];
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.picture.frame = self.pictureHolder.bounds;
+    double d = [self.player duration], pos = [self.player position];
+    CGFloat w = d > 0 ? (self.bounds.size.width - 28) * MIN(1, pos / d) : 0;
+    self.progress.frame = CGRectMake(14, self.bounds.size.height - 4, MAX(0, w), 3);
+}
+
+- (void)refresh {
+    BOOL pl = [self.player isPlaying];
+    [self.playB setImage:[UIImage systemImageNamed:pl ? @"pause.fill" : @"play.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    self.stateLabel.text = pl ? @"Playing" : @"Paused";
+    [self setNeedsLayout];
+}
+
+- (void)togglePlay {
+    if ([self.player isPlaying]) [self.player pausePlayback]; else [self.player resume];
+    [self refresh];
+}
+
+- (void)toBackground { self.picture.player = nil; }   // so the sound keeps going when the phone locks
+- (void)toForeground { self.picture.player = self.player.keptPlayer; }
+
+/// A song started in the Library: the video steps aside.
+- (void)musicStarted {
+    if (VGMusicPlayer.shared.playing) [self closeNow];
+}
+
+- (void)teardown {
+    [self.timer invalidate]; self.timer = nil;
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    self.picture.player = nil;
+    if (gMiniBar == self) gMiniBar = nil;
+}
+
+- (void)closeNow {
+    VGPlayerViewController *p = self.player;
+    [self teardown];
+    p.minimized = NO;
+    [p shutDown];
+    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 0; self.transform = CGAffineTransformMakeTranslation(0, 20); } completion:^(BOOL f) { [self removeFromSuperview]; }];
+}
+
+/// Tap the bar: the full player comes back and the video carries on from the same second.
+- (void)expand {
+    VGPlayerViewController *p = self.player;
+    UIViewController *host = [VGPlayerViewController hostForRestore];
+    if (!host) return;
+    [self teardown];
+    p.minimized = NO;
+    if (p.videoView.playerLayer.player != p.keptPlayer) p.videoView.playerLayer.player = p.keptPlayer;
+    p.modalPresentationStyle = UIModalPresentationFullScreen;
+    [host presentViewController:p animated:YES completion:^{ if (p.keptPlayer.rate == 0 && p.keptPlayer.timeControlStatus == AVPlayerTimeControlStatusPaused) { /* stays as the viewer left it */ } }];
+    [UIView animateWithDuration:0.2 animations:^{ self.alpha = 0; } completion:^(BOOL f) { [self removeFromSuperview]; }];
 }
 
 @end

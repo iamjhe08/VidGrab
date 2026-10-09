@@ -1,4 +1,5 @@
 #import "VGEngine.h"
+#import "VGDownloadDefaults.h"
 #import "VGAudioTags.h"
 #import "VGCoverSearch.h"
 #import <objc/runtime.h>
@@ -604,6 +605,20 @@ static NSString *baseDomain(NSString *host) {
     }];
 }
 
+- (void)liveLinkFor:(VGVideo *)video option:(VGOption *)option completion:(void (^)(NSDictionary *, NSString *))completion {
+    NSString *r = option.res ?: @"";
+    NSInteger h = [r hasPrefix:@"4K"] ? 2160 : ([r hasPrefix:@"2K"] ? 1440 : r.integerValue);
+    NSString *extraJSON = video.extra ?: @"";
+    [self cookiesFor:video.url completion:^(NSString *cookies) {
+        [[VGPython shared] call:@"vgbridge" function:@"live"
+                           args:@[video.url, [VGPython shared].cacheDir, cookies ?: @"", extraJSON, [NSString stringWithFormat:@"%ld", (long)h]]
+                     completion:^(NSDictionary *r2, NSString *error) {
+            if (!r2) { completion(nil, error ?: @"Couldn't start the live conversion."); return; }
+            completion(r2, nil);
+        }];
+    }];
+}
+
 - (void)fetch:(NSString *)url extra:(NSDictionary *)extra completion:(void (^)(VGVideo *, NSString *))completion {
     NSString *extraJSON = @"";
     if ([extra isKindOfClass:NSDictionary.class] && extra.count && [NSJSONSerialization isValidJSONObject:extra]) {
@@ -936,7 +951,7 @@ static NSString *resumeFile(void) { return [resumeRoot() stringByAppendingPathCo
 
     task.pyRunning = YES;
     [self cookiesFor:video.url completion:^(NSString *cookies) {
-        [py call:@"vgbridge" function:@"download" args:@[task.identifier, video.url, option.identifier, work, py.cacheDir, cookies, video.extra ?: @""]
+        [py call:@"vgbridge" function:@"download" args:@[task.identifier, video.url, option.identifier, work, py.cacheDir, cookies, [VGDownloadDefaults extraWithThreads:video.extra ?: @""]]
       completion:^(NSDictionary *r, NSString *error) {
             task.pyRunning = NO;
             if (task.state != VGTaskRunning) {   // paused or cancelled while it was working

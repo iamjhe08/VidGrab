@@ -79,6 +79,10 @@ static NSString *const kOverlayJS = @""
 }
 
 - (void)viewDidLoad {
+    // The Stream button in the quality sheet opens VidGrab's player: stop the page's own video so they don't play together.
+    [NSNotificationCenter.defaultCenter addObserverForName:@"VGPauseBrowserMedia" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        [self.web evaluateJavaScript:@"document.querySelectorAll('video,audio').forEach(function(m){try{m.pause()}catch(e){}})" completionHandler:nil];
+    }];
     [super viewDidLoad];
     self.view.backgroundColor = VGBackground;
     self.title = @"Browse";

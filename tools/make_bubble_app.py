@@ -4,7 +4,7 @@ import os, plistlib, shutil, subprocess, sys, zipfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LDID = '/root/theos/toolchain/linux/iphone/bin/ldid'
 out = sys.argv[1]
-ver = sys.argv[2] if len(sys.argv) > 2 else '1.3.3'
+ver = sys.argv[2] if len(sys.argv) > 2 else '1.3.4'
 env = dict(os.environ, THEOS='/root/theos')
 subprocess.run(['make', '-C', os.path.join(HERE, 'helper'), 'FINALPACKAGE=1'], check=True, env=env)
 src = os.path.join(HERE, 'helper', '.theos', 'obj', 'VidGrabBubble.app')

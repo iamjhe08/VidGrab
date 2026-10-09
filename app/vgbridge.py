@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import time
 import traceback
 
 import vgnative
@@ -91,6 +92,8 @@ def _clean(msg):
         return "Couldn't reach the site. Check your internet connection and try again."
     if 'Unsupported URL' in msg:
         return "This site isn't supported, or the link isn't a video page."
+    if 'not a bot' in low or 'confirm you' in low:
+        return "YouTube is asking to confirm you're not a bot. Sign in to YouTube in the Browse tab and try again, or update the engine in Settings."
     if 'Sign in' in msg or 'login' in msg.lower() or 'private' in msg.lower():
         return 'This video needs an account to view (private or login only), so it can\'t be downloaded.'
     return msg or 'Something went wrong.'
@@ -431,6 +434,14 @@ def _extra(extra_json):
     return d if isinstance(d, dict) else {}
 
 
+def _threads(extra):
+    try:
+        n = int((extra or {}).get('threads') or 8)
+    except (TypeError, ValueError):
+        n = 8
+    return max(1, min(n, 64))
+
+
 def _apply_extra(params, extra):
     h = extra.get('headers')
     if isinstance(h, dict) and h:
@@ -509,7 +520,64 @@ def _direct_info(ydl, url, extra):
     }
 
 
-def _extract(ydl, url, extra):
+_cookie_path = ['']
+_good_clients = [None, 0.0]    # the connection style that last got past YouTube's check, and when
+
+
+def _set_cookie(path):
+    _cookie_path[0] = path or ''
+
+
+def _with_clients(ydl, clients, cookies):
+    p = dict(ydl.params)
+    p['socket_timeout'] = 10   # a style that is blocked should fail fast, not hold the lookup up
+    p['retries'] = 1
+    if clients:
+        p['extractor_args'] = {'youtube': {'player_client': clients}}
+    if cookies:
+        p['cookiefile'] = cookies
+    return yt_dlp.YoutubeDL(p)
+
+
+def _extract(ydl, url, extra, retry=True):
+    """Normal lookup. For YouTube, if the first try is stopped ("confirm you're not a bot", 403...), it tries the
+    other connection styles the download uses, and a YouTube sign-in from the Browse tab as the last resort. What
+    worked is remembered for an hour so the next video doesn't repeat the failures."""
+    youtube = retry and not extra.get('kind') and _is_youtube(url, None)
+    if youtube and _good_clients[0] and time.time() - _good_clients[1] < 3600:
+        try:
+            with _with_clients(ydl, _good_clients[0], '') as y2:
+                return _extract_once(y2, url, extra)
+        except DownloadCancelled:
+            raise
+        except Exception:
+            _good_clients[0] = None
+    try:
+        return _extract_once(ydl, url, extra)
+    except DownloadCancelled:
+        raise
+    except Exception as e:
+        if not (youtube and _blocked(str(e))):
+            raise
+        first = e
+        tries = [(c, '') for c in _YT_CLIENT_FALLBACKS[1:]]
+        if _has_youtube_login(_cookie_path[0]):
+            tries.append((None, _cookie_path[0]))
+        for clients, cookies in tries:
+            try:
+                with _with_clients(ydl, clients, cookies) as y2:
+                    info = _extract_once(y2, url, extra)
+                if clients:
+                    _good_clients[0], _good_clients[1] = clients, time.time()
+                return info
+            except DownloadCancelled:
+                raise
+            except Exception:
+                continue
+        raise first
+
+
+def _extract_once(ydl, url, extra):
     """Normal lookup. Links the browser caught play-first go straight to the direct route; a link
     yt-dlp doesn't recognise gets one more chance by looking at what the address really serves."""
     if extra.get('kind'):
@@ -607,6 +675,7 @@ def _looks_like_tabs(entries):
 
 
 def fetch(url, cache_dir, cookiefile='', extra=''):
+    _set_cookie(cookiefile)
     try:
         ex = _extra(extra)
         params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
@@ -721,6 +790,7 @@ def _variants(info):
 
 
 def stream(url, cache_dir, cookiefile='', extra='', max_h=0, audio_only=0):
+    _set_cookie(cookiefile)
     try:
         ex = _extra(extra)
         info = _infos.get(url)
@@ -780,7 +850,43 @@ def stream(url, cache_dir, cookiefile='', extra='', max_h=0, audio_only=0):
         return json.dumps({'error': _clean(e)})
 
 
+def live(url, cache_dir, cookiefile='', extra='', height=0):
+    _set_cookie(cookiefile)
+    """The VP9 picture and the best sound for one quality, for the live conversion (2K, 4K, 1440p...)."""
+    try:
+        ex = _extra(extra)
+        info = _infos.get(url)
+        if not info:
+            params = _params(cache_dir, **_cookie_params(cookiefile, _is_youtube(url, None)))
+            _apply_extra(params, ex)
+            with yt_dlp.YoutubeDL(params) as ydl:
+                info = _extract(ydl, url, ex)
+        if not info or info.get('_type') == 'playlist':
+            return json.dumps({'error': 'No video found at that link.'})
+        req = int(float(height or 0))
+        combined, video, audio, other = _kinds(info)
+        vp9 = [f for f in video if f.get('url') and _is_vp9(f) and not _hls(f) and (f.get('dynamic_range') in (None, 'SDR'))]
+        near = [f for f in vp9 if req and abs(_height(f) - req) <= 8] or [f for f in vp9 if not req or _height(f) <= req]
+        v = max(near, key=_rank, default=None)
+        auds = [f for f in audio if f.get('url') and not _hls(f)]
+        a = max(auds, key=lambda f: (1 if _m4a(f) else 0, _audio_key(f)), default=None)
+        if not v:
+            return json.dumps({'error': "This quality isn't available in a format VidGrab can convert."})
+        out = {'video': {'url': v['url'], 'headers': _stream_headers(v, info), 'height': _height(v), 'fps': v.get('fps') or 30,
+                         'size': v.get('filesize') or v.get('filesize_approx') or 0},
+               'duration': info.get('duration') or 0}
+        if a:
+            out['audio'] = {'url': a['url'], 'headers': _stream_headers(a, info), 'size': a.get('filesize') or a.get('filesize_approx') or 0}
+        return json.dumps(out)
+    except DownloadCancelled:
+        return json.dumps({'error': 'Cancelled.'})
+    except Exception as e:
+        _remember(e)
+        return json.dumps({'error': _clean(e)})
+
+
 def link(url, option_id, cache_dir, cookiefile='', extra=''):
+    _set_cookie(cookiefile)
     """The link(s) a download of this option would fetch: the same lookup and the same pick as `download`,
     so the copied link is the one that really works for the video chosen. One link, or two when picture and sound are separate."""
     try:
@@ -823,6 +929,7 @@ def _link_label(f):
 
 
 def links(url, option_id, cache_dir, cookiefile='', extra=''):
+    _set_cookie(cookiefile)
     """Every link worth trying for this video: the one a download of the picked option fetches first,
     then the main playlists (all qualities), then each quality on its own."""
     try:
@@ -907,7 +1014,7 @@ def _clear_dir(d):
             pass
 
 
-def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', extra=None):
+def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', extra=None, strict=False):
     """One extract + download in a single session. Returns (result dict, error str, raw str)."""
     files = []
     parts = {}
@@ -932,7 +1039,7 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
     # Speed: fetch 8 pieces of a stream at once, and ask for big files in 10 MB slices
     # (sites like YouTube slow down one long request but not many short ones).
     params = _params(cache_dir, logger=logger, progress_hooks=[hook], overwrites=True, hls_prefer_native=True,
-                     concurrent_fragment_downloads=8, http_chunk_size=10 * 1024 * 1024,
+                     concurrent_fragment_downloads=_threads(extra), http_chunk_size=10 * 1024 * 1024,
                      outtmpl={'default': os.path.join(out_dir, '%(title).80B.f%(format_id)s.%(ext)s')})
     if clients:
         params['extractor_args'] = {'youtube': {'player_client': clients}}
@@ -943,7 +1050,7 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
 
     try:
         with yt_dlp.YoutubeDL(params) as ydl:
-            info = _extract(ydl, url, extra)
+            info = _extract(ydl, url, extra, retry=False)   # download() has its own list of connection styles
             if info and info.get('_type') == 'playlist':
                 info = next((e for e in (info.get('entries') or []) if e), None)
             if not info:
@@ -951,6 +1058,7 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
 
             if option_id.startswith('q:'):
                 option_id = _pick_option(info, option_id[2:])   # playlist downloads: one quality for all
+            h = None
             if option_id in _AUDIO_IDS:
                 fmts, photos = _audio_plan(info)
                 kind = option_id if option_id in ('mp3', 'wav', 'flac') else 'audio'
@@ -963,6 +1071,10 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
                         photos = True    # the app converts it to MP4 after downloading
             if not fmts:
                 return None, 'requested format is not available', 'requested format is not available'
+            if strict and h:
+                got = max([_height(f) for f in fmts if not _none(f.get('vcodec'))] or [0])
+                if 0 < got < h * 0.9:
+                    return None, 'LOWQ', ''   # this connection style only offered a small picture: try the next one
 
             for i, f in enumerate(fmts):
                 stage = 'audio' if (_none(f.get('vcodec')) and not _none(f.get('acodec'))) else 'video'
@@ -1012,10 +1124,14 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
 
 
 def download(task, url, option_id, out_dir, cache_dir, cookiefile='', extra=''):
+    _set_cookie(cookiefile)
     ex = _extra(extra)
     youtube = _is_youtube(url, _infos.get(url))
     if youtube:
         attempts = [(c, '') for c in _YT_CLIENT_FALLBACKS]
+        if _good_clients[0] and time.time() - _good_clients[1] < 3600 and (_good_clients[0], '') in attempts[1:]:
+            attempts.remove((_good_clients[0], ''))
+            attempts.insert(0, (_good_clients[0], ''))   # the style that worked a moment ago goes first
         if _has_youtube_login(cookiefile):
             attempts.append((None, cookiefile))  # signed in via the browser: last resort
     else:
@@ -1026,9 +1142,12 @@ def download(task, url, option_id, out_dir, cache_dir, cookiefile='', extra=''):
             return json.dumps({'error': 'Cancelled.'})
         if n:
             vgnative.progress(task, 0, 1, 0.0, 'retry', -1.0, -1.0)
-        result, error, raw = _attempt(task, url, option_id, out_dir, cache_dir, clients, cookies, ex)
+        result, error, raw = _attempt(task, url, option_id, out_dir, cache_dir, clients, cookies, ex, strict=(youtube and n < len(attempts) - 1))
         if result:
             return json.dumps(result)
+        if error == 'LOWQ':
+            error = 'Something went wrong.'
+            continue
         if error == 'Cancelled.' or not _blocked(raw or error):
             break
     if _blocked(_last_raw):

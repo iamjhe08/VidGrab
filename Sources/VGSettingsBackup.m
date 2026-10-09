@@ -8,6 +8,8 @@
 static NSDictionary<NSString *, NSString *> *Known(void) {
     return @{
         @"vgClipboardCheck":   @"Find copied links",
+        @"vgDefQuality":       @"Default download quality",
+        @"vgDefKind":          @"Default download type",
         @"vgKeepDownloading":  @"Keep downloading in background",
         @"vgAutoClearCache":   @"Auto-clear cache on launch",
         @"vgAdblock":          @"Ad blocker",
@@ -16,6 +18,8 @@ static NSDictionary<NSString *, NSString *> *Known(void) {
         @"vgFavorites":        @"Browser favorites",
         @"vgOverlayBubble":    @"Bubble outside the app",
         @"vgFinishSound":      @"Sound when done",
+        @"vgThreads":          @"Connections per download",
+        @"vgFilesOnly":        @"Files only",
         @"vgBubbleSide":       @"Bubble position",
         @"vgBubbleY":          @"Bubble position",
         @"vgGestureLevels":     @"Player brightness and volume swipe",

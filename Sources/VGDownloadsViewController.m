@@ -1,5 +1,6 @@
 #import "VGDownloadsViewController.h"
 #import "VGEngine.h"
+#import "VGDownloadDefaults.h"
 #import "VGTheme.h"
 #import "VGActions.h"
 #import "VGSupportViewController.h"
@@ -354,6 +355,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 @property (nonatomic) NSInteger importAlertState;   // 0 not showing, 1 appearing, 2 showing
 @property (nonatomic, strong) UIView *actionBar;
 @property (nonatomic, strong) NSArray<UIButton *> *actionButtons;
+@property (nonatomic, strong) UIButton *batchPhotosButton;
 @property (nonatomic, strong) UIButton *vaultAction;
 @property (nonatomic, strong) NSArray<VGItem *> *oldItems;
 @end
@@ -521,6 +523,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    self.batchPhotosButton.hidden = VGDownloadDefaults.filesOnly;
     [super viewWillAppear:animated];
     self.navigationController.tabBarItem.badgeValue = nil;
     [self reload];
@@ -535,16 +538,16 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 
 #pragma mark Private Vault 2.0
 
-/// The way into the vault: press and hold the word "Downloads" for 1.5 seconds.
+/// The way into the vault: press and hold the word "Downloads" for 1 second.
 - (UILongPressGestureRecognizer *)secretHold {
     UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(secretHeld:)];
-    g.minimumPressDuration = 1.5;
+    g.minimumPressDuration = 1.0;
     g.allowableMovement = 30;
     return g;
 }
 
 - (void)secretHeld:(UILongPressGestureRecognizer *)g {
-    if (g.state != UIGestureRecognizerStateBegan) return;   // fires once the 1.5 seconds are up
+    if (g.state != UIGestureRecognizerStateBegan) return;   // fires once the second is up
     [[UIImpactFeedbackGenerator new] impactOccurred];
     [self openVault];
 }
@@ -721,7 +724,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     NSMutableArray *actions = [NSMutableArray array];
     [actions addObject:[UIAction actionWithTitle:@"Play" image:[UIImage systemImageNamed:@"play.fill"] identifier:nil
                                          handler:^(UIAction *a) { [VGActions play:item from:ws]; }]];
-    if (item.photos) {
+    if (item.photos && !VGDownloadDefaults.filesOnly) {
         [actions addObject:[UIAction actionWithTitle:@"Save to Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil
                                              handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
     }
@@ -753,7 +756,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     if (inVault) {
         // Private Vault 2.0: everything that leaves the vault is grouped under Export.
         NSMutableArray *ex = [NSMutableArray array];
-        if (item.photos) [ex addObject:[UIAction actionWithTitle:@"Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
+        if (item.photos && !VGDownloadDefaults.filesOnly) [ex addObject:[UIAction actionWithTitle:@"Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
         [ex addObject:[UIAction actionWithTitle:@"Files" image:[UIImage systemImageNamed:@"folder"] identifier:nil handler:^(UIAction *a) { [VGActions saveToFiles:item from:ws]; }]];
         [ex addObject:[UIAction actionWithTitle:@"Downloads (keep a copy here too)" image:[UIImage systemImageNamed:@"arrow.down.circle"] identifier:nil handler:^(UIAction *a) {
             [[VGEngine shared] copyItemToDownloads:item completion:^(NSString *err) {
@@ -1152,6 +1155,8 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
     bar.hidden = YES;
 
     UIButton *photos = [self actionButton:@"Photos" icon:@"photo.on.rectangle.angled" tint:VGText action:@selector(batchPhotos)];
+    self.batchPhotosButton = photos;
+    photos.hidden = VGDownloadDefaults.filesOnly;
     UIButton *files = [self actionButton:@"Files" icon:@"folder" tint:VGText action:@selector(batchFiles)];
     UIButton *share = [self actionButton:@"Share" icon:@"square.and.arrow.up" tint:VGText action:@selector(batchShare:)];
     self.vaultAction = [self actionButton:self.vaultMode ? @"Unlock" : @"Vault" icon:self.vaultMode ? @"lock.open" : @"lock" tint:VGText action:@selector(batchVault)];

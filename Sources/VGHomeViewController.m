@@ -1,4 +1,5 @@
 #import "VGHomeViewController.h"
+#import "VGDownloadDefaults.h"
 #import "VGPlaylistStore.h"
 #import "VGSavedPlaylistsViewController.h"
 #import "VGEngine.h"
@@ -30,6 +31,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 
 @property (nonatomic, strong) UIView *qualitySection;
 @property (nonatomic, strong) UICollectionView *qualityList;
+@property (nonatomic, strong) UILabel *qualityHeading;
 @property (nonatomic, strong) UIButton *downloadButton;
 @property (nonatomic, strong) UILabel *downloadCaption;
 
@@ -45,6 +47,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic, strong) VGItem *item;
 @property (nonatomic, weak) VGTask *task;   // the download this screen is showing
 @property (nonatomic) NSInteger selected;
+@property (nonatomic) BOOL userPicked;   // a quality was tapped, so Stream uses it instead of choosing by itself
 @property (nonatomic) VGStep step;
 
 // Paste-free start
@@ -64,6 +67,9 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic) NSInteger queuePos, queueRepeat;
 @property (nonatomic) BOOL queueShuffle, queueStarted;
 @property (nonatomic) NSUInteger queueLoadID;
+@property (nonatomic, strong) NSMutableDictionary *prefetch;      // song index -> link and player item made ahead of time
+@property (nonatomic, strong) NSMutableSet *prefetching;
+@property (nonatomic) NSInteger queueFailures;   // tracks in a row that would not load
 @property (nonatomic, weak) VGPlayerViewController *queuePlayer;
 @property (nonatomic, strong) UISegmentedControl *modeControl;   // Download or Stream
 @property (nonatomic) BOOL opening;
@@ -79,6 +85,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic, strong) VGProgressBar *nowBar;
 @property (nonatomic, strong) UIView *recentBlock;
 @property (nonatomic, strong) UIStackView *recentRow;
+@property (nonatomic, strong) UIScrollView *recentScroll;
 @end
 
 static NSString *const kClipCount = @"vgClipboardCount";
@@ -460,6 +467,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 - (void)buildQuality {
     UILabel *h = [self label:VGFont(20, UIFontWeightHeavy) color:VGText lines:1];
     h.text = @"Choose quality";
+    self.qualityHeading = h;
 
     UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
     layout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
@@ -722,9 +730,11 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
     // Preselect the best option that works with Photos.
     self.selected = 0;
+    self.userPicked = NO;
     [self.video.options enumerateObjectsUsingBlock:^(VGOption *o, NSUInteger i, BOOL *stop) {
         if (o.photos) { self.selected = (NSInteger)i; *stop = YES; }
     }];
+    self.selected = [VGDownloadDefaults indexIn:self.video.options current:self.selected];   // Settings > Downloads
     [self.qualityList reloadData];
     [self.qualityList scrollToItemAtIndexPath:[NSIndexPath indexPathForItem:self.selected inSection:0]
                              atScrollPosition:UICollectionViewScrollPositionCenteredHorizontally animated:NO];
@@ -753,17 +763,28 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 - (void)updateCaption {
     VGOption *o = self.video.options.count > (NSUInteger)self.selected ? self.video.options[self.selected] : nil;
     if (!o) { self.downloadCaption.text = @""; return; }
+    // With a default set in Settings > Downloads, Download shows just the start button; Stream shows every quality.
+    BOOL compact = VGDownloadDefaults.skipSheet && !self.video.isPlaylist && ![self streamMode];
+    self.qualityList.hidden = compact;
+    self.qualityHeading.superview.hidden = compact;
+    if (compact) {
+        NSString *what = o.audio ? @"audio" : o.res;
+        [self setPrimaryTitle:[NSString stringWithFormat:@"Start download \u00b7 %@", what] icon:@"arrow.down.to.line"];
+        self.downloadCaption.text = [NSString stringWithFormat:@"Your default: %@ \u00b7 %@%@. Change it in Settings > Downloads. Switch to Stream to see every quality.", what, o.format ?: @"MP4", o.sizeText.length ? [@" \u00b7 " stringByAppendingString:o.sizeText] : @""];
+        return;
+    }
     if ([self streamMode]) {
         [self setPrimaryTitle:(self.opening ? @"Opening…" : @"Stream") icon:@"play.fill"];
         self.downloadCaption.text = o.audio ? @"Plays now in VidGrab's player. Nothing is saved unless you tap the download button there"
-                                            : @"Plays now in VidGrab's player. Tap the download button in the player to keep it";
+                                            : (self.userPicked ? [NSString stringWithFormat:@"Opens right away, then switches to %@ as soon as it's ready. Tap the download button in the player to keep it", o.res]
+                                               : @"Quality adjusts by itself. Tap a quality to choose one. Tap the download button in the player to keep it");
         return;
     }
     [self setPrimaryTitle:@"Download" icon:@"arrow.down.to.line"];
     if ([o.identifier isEqualToString:@"mp3"]) self.downloadCaption.text = @"MP3 at 256 kbps · plays anywhere. Share it or save to Files";
     else if (o.audio) self.downloadCaption.text = @"M4A audio · Share it or save to Files";
     else if (o.convert) self.downloadCaption.text = @"Converted to MP4 on your iPhone so Photos can play it. Takes a few minutes; keep the app open.";
-    else if (o.photos) self.downloadCaption.text = @"MP4 · Ready for your Photos library";
+    else if (o.photos) self.downloadCaption.text = @"MP4 · Works with Photos";
     else self.downloadCaption.text = [NSString stringWithFormat:@"%@ · The Photos app can't open this one, but Files and other apps can", o.format];
 }
 
@@ -772,6 +793,8 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     // No quality is asked for here: the player opens fast on its own pick and the viewer changes quality inside it.
     VGOption *picked = self.video.options[self.selected];
     VGOption *opt = picked.audio ? picked : nil;
+    // A tapped video quality: the player opens at once on its own pick, then moves to this quality while it plays.
+    VGOption *chosen = (!picked.audio && self.userPicked) ? picked : nil;
     VGVideo *video = self.video;
     NSUInteger token = self.lookupID;
     self.opening = YES;
@@ -793,7 +816,10 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
             p.streamVariants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
             UIViewController *top = ws;
             while (top.presentedViewController) top = top.presentedViewController;
-            [top presentViewController:p animated:YES completion:^{ [p start]; }];
+            [top presentViewController:p animated:YES completion:^{
+                [p start];
+                if (chosen) [p switchToOption:chosen];
+            }];
         }];
     }];
 }
@@ -828,7 +854,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         ws.item = item;
         ws.doneSub.text = [NSString stringWithFormat:@"%@ · %@ · in your Downloads", item.res,
                            [NSByteCountFormatter stringFromByteCount:item.bytes countStyle:NSByteCountFormatterCountStyleFile]];
-        ws.photosButton.hidden = !item.photos;
+        ws.photosButton.hidden = !item.photos || VGDownloadDefaults.filesOnly;
         [ws setStep:VGStepDone animated:YES];
         [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
     }];
@@ -1206,12 +1232,16 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     for (NSUInteger i = 0; i < entries.count && i < self.picked.count; i++) if ([self.picked[i] boolValue]) [q addObject:entries[i]];
     if (!q.count) return;
     self.streamQueue = q;
-    self.queueShuffle = NO;
-    self.queueRepeat = 0;
+    // Shuffle and repeat stay as you left them, from one playlist to the next.
+    self.queueShuffle = [NSUserDefaults.standardUserDefaults boolForKey:@"vgPlaylistShuffle"];
+    self.queueRepeat = [NSUserDefaults.standardUserDefaults integerForKey:@"vgPlaylistRepeat"];
     self.queuePlayer = nil;
     self.queueStarted = NO;
+    self.queueFailures = 0;
+    [self.prefetch removeAllObjects]; [self.prefetching removeAllObjects];
     self.queueOrder = [NSMutableArray array];
     for (NSUInteger i = 0; i < q.count; i++) [self.queueOrder addObject:@(i)];
+    if (self.queueShuffle) [self rebuildQueueOrderKeeping:-1];   // a shuffled start: any song may lead
     ++self.playlistStreamToken;
     self.playlistStream.enabled = NO;
     [self loadQueuePos:0 direction:1];
@@ -1237,6 +1267,8 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 - (void)queueModeChangedShuffle:(BOOL)shuffle repeat:(NSInteger)repeat {
     NSInteger cur = (self.queuePos >= 0 && self.queuePos < (NSInteger)self.queueOrder.count) ? [self.queueOrder[self.queuePos] integerValue] : -1;
+    [NSUserDefaults.standardUserDefaults setBool:shuffle forKey:@"vgPlaylistShuffle"];
+    [NSUserDefaults.standardUserDefaults setInteger:repeat forKey:@"vgPlaylistRepeat"];
     BOOL reorder = shuffle != self.queueShuffle;
     self.queueShuffle = shuffle;
     self.queueRepeat = repeat;
@@ -1268,6 +1300,13 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     [self loadQueuePos:next direction:dir];
 }
 
+/// A message while a playlist streams: in the player's own spot when it is open, otherwise at the bottom of the screen.
+- (void)queueToast:(NSString *)text icon:(NSString *)icon {
+    VGPlayerViewController *p = self.queuePlayer;
+    if (p && p.presentingViewController) [p say:text icon:icon];
+    else [VGActions toast:text icon:icon in:self.view.window ?: self.view bottom:70];
+}
+
 - (void)loadQueuePos:(NSInteger)pos direction:(NSInteger)dir {
     __weak typeof(self) ws = self;
     NSArray<VGVideo *> *q = self.streamQueue;
@@ -1279,42 +1318,101 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     NSUInteger token = self.playlistStreamToken;
     NSUInteger load = ++self.queueLoadID;
     VGVideo *video = q[[self.queueOrder[pos] unsignedIntegerValue]];
-    NSString *position = [NSString stringWithFormat:@"%ld of %lu", (long)pos + 1, (unsigned long)q.count];
-    UIView *host = self.queuePlayer.view ?: self.view.window ?: self.view;
-    [VGActions toast:[NSString stringWithFormat:@"Opening %@…", position] icon:@"play.circle.fill" in:host];
-    void (^skip)(void) = ^{
-        [VGActions toast:@"Couldn't stream one video, skipping it" icon:@"exclamationmark.triangle.fill" in:ws.queuePlayer.view ?: ws.view.window ?: ws.view];
+    // The number is the song's place in the playlist, not in the shuffled order, so shuffle visibly jumps around.
+    NSString *position = [NSString stringWithFormat:@"%lu of %lu", (unsigned long)[self.queueOrder[pos] unsignedIntegerValue] + 1, (unsigned long)q.count];
+    [self queueToast:[NSString stringWithFormat:@"Opening %@…", position] icon:@"play.circle.fill"];
+    void (^skip)(NSString *) = ^(NSString *why) {
+        // Several in a row means something is wrong (no connection, the site refusing): stop and say why, instead of
+        // running through the whole playlist and sending hundreds of requests.
+        if (++ws.queueFailures >= 3) {
+            ws.queueFailures = 0;
+            reset();
+            NSString *msg = why.length ? why : @"Check your connection, or update the engine in Settings";
+            if (msg.length > 90) msg = [[msg substringToIndex:88] stringByAppendingString:@"\u2026"];
+            [ws queueToast:[NSString stringWithFormat:@"Couldn't stream: %@", msg] icon:@"exclamationmark.triangle.fill"];
+            if (!ws.queuePlayer.presentingViewController) ws.queueStarted = NO;
+            return;
+        }
+        [ws queueToast:@"Couldn't stream that one, skipping it" icon:@"exclamationmark.triangle.fill"];
         [ws loadQueuePos:pos + (dir < 0 ? -1 : 1) direction:dir];
     };
+    NSUInteger vidx = [self.queueOrder[pos] unsignedIntegerValue];
+    // Shows the track once its link and player item are ready (the same whether they were just made or loaded ahead).
+    void (^deliver)(NSDictionary *, AVPlayerItem *) = ^(NSDictionary *info, AVPlayerItem *item) {
+        BOOL audio = [info[@"audio"] boolValue], master = [info[@"master"] boolValue];
+        NSDictionary *variants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
+        ws.queueFailures = 0;
+        VGPlayerViewController *cur = ws.queuePlayer;
+        if (cur && cur.presentingViewController) {
+            [cur swapToStreamItem:item video:video audio:audio master:master variants:variants position:position];   // same player, no flicker
+        } else {
+            VGPlayerViewController *p = [VGPlayerViewController playerForStreamItem:item video:video option:nil audio:audio];
+            p.streamMaster = master;
+            p.streamVariants = variants;
+            p.positionText = position;
+            p.playlistMode = YES;
+            p.shuffleOn = ws.queueShuffle;
+            p.repeatMode = ws.queueRepeat;
+            p.onEnded = ^(VGPlayerViewController *x) { [ws queueStep:1 ended:YES]; };
+            p.onSkip = ^(VGPlayerViewController *x, NSInteger d) { [ws queueStep:d ended:NO]; };
+            p.onModeChange = ^(BOOL shuffle, NSInteger repeat) { [ws queueModeChangedShuffle:shuffle repeat:repeat]; };
+            p.trackProvider = ^NSDictionary *{
+                // Always the playlist's own order (shuffle only changes what plays next), with the playing song marked.
+                NSMutableArray *titles = [NSMutableArray array];
+                for (VGVideo *v in ws.streamQueue) [titles addObject:v.title.length ? v.title : @"Video"];
+                NSInteger cur = (ws.queuePos >= 0 && ws.queuePos < (NSInteger)ws.queueOrder.count) ? [ws.queueOrder[ws.queuePos] integerValue] : -1;
+                return @{@"titles": titles, @"current": @(cur)};
+            };
+            p.onPickTrack = ^(NSInteger index) {
+                NSInteger pos = [ws.queueOrder indexOfObject:@(index)];
+                if (pos == NSNotFound) return;
+                [ws loadQueuePos:pos direction:pos >= ws.queuePos ? 1 : -1];
+            };
+            ws.queuePlayer = p;
+            ws.queueStarted = YES;
+            UIViewController *top = ws;
+            while (top.presentedViewController) top = top.presentedViewController;
+            [top presentViewController:p animated:YES completion:^{ [p start]; }];
+        }
+        ws.playlistStream.enabled = YES;
+        [ws prefetchNext];
+    };
+    NSDictionary *ahead = self.prefetch[@(vidx)];
+    if (ahead && -[ahead[@"t"] timeIntervalSinceNow] < 1200) {   // loaded while the last song played: no waiting
+        [self.prefetch removeObjectForKey:@(vidx)];
+        deliver(ahead[@"info"], ahead[@"item"]);
+        return;
+    }
     [[VGEngine shared] streamLinkFor:video option:nil completion:^(NSDictionary *info, NSString *error) {
         if (!ws || ws.playlistStreamToken != token || ws.queueLoadID != load) return;
-        if (!info) { skip(); return; }
+        if (!info) { skip(error); return; }
         [VGPlayerViewController prepareStream:info completion:^(AVPlayerItem *item, NSString *err) {
             if (!ws || ws.playlistStreamToken != token || ws.queueLoadID != load) return;
-            if (!item) { skip(); return; }
-            BOOL audio = [info[@"audio"] boolValue], master = [info[@"master"] boolValue];
-            NSDictionary *variants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
-            VGPlayerViewController *cur = ws.queuePlayer;
-            if (cur && cur.presentingViewController) {
-                [cur swapToStreamItem:item video:video audio:audio master:master variants:variants position:position];   // same player, no flicker
-            } else {
-                VGPlayerViewController *p = [VGPlayerViewController playerForStreamItem:item video:video option:nil audio:audio];
-                p.streamMaster = master;
-                p.streamVariants = variants;
-                p.positionText = position;
-                p.playlistMode = YES;
-                p.shuffleOn = ws.queueShuffle;
-                p.repeatMode = ws.queueRepeat;
-                p.onEnded = ^(VGPlayerViewController *x) { [ws queueStep:1 ended:YES]; };
-                p.onSkip = ^(VGPlayerViewController *x, NSInteger d) { [ws queueStep:d ended:NO]; };
-                p.onModeChange = ^(BOOL shuffle, NSInteger repeat) { [ws queueModeChangedShuffle:shuffle repeat:repeat]; };
-                ws.queuePlayer = p;
-                ws.queueStarted = YES;
-                UIViewController *top = ws;
-                while (top.presentedViewController) top = top.presentedViewController;
-                [top presentViewController:p animated:YES completion:^{ [p start]; }];
-            }
-            ws.playlistStream.enabled = YES;
+            if (!item) { skip(err); return; }
+            deliver(info, item);
+        }];
+    }];
+}
+
+/// Gets the next song ready while the current one plays, so Next starts at once.
+- (void)prefetchNext {
+    NSInteger n = (NSInteger)self.queueOrder.count, next = self.queuePos + 1;
+    if (self.queuePos < 0 || next >= n) return;
+    NSUInteger vidx = [self.queueOrder[next] unsignedIntegerValue];
+    if (vidx >= self.streamQueue.count || self.prefetch[@(vidx)] || [self.prefetching containsObject:@(vidx)]) return;
+    if (!self.prefetch) self.prefetch = [NSMutableDictionary dictionary];
+    if (!self.prefetching) self.prefetching = [NSMutableSet set];
+    [self.prefetching addObject:@(vidx)];
+    NSUInteger token = self.playlistStreamToken;
+    __weak typeof(self) ws = self;
+    VGVideo *video = self.streamQueue[vidx];
+    [[VGEngine shared] streamLinkFor:video option:nil completion:^(NSDictionary *info, NSString *error) {
+        if (!ws || ws.playlistStreamToken != token || !info) { [ws.prefetching removeObject:@(vidx)]; return; }
+        [VGPlayerViewController prepareStream:info completion:^(AVPlayerItem *item, NSString *err) {
+            [ws.prefetching removeObject:@(vidx)];
+            if (!ws || ws.playlistStreamToken != token || !item) return;
+            while (ws.prefetch.count >= 2) [ws.prefetch removeObjectForKey:ws.prefetch.allKeys.firstObject];
+            ws.prefetch[@(vidx)] = @{@"info": info, @"item": item, @"t": [NSDate date]};
         }];
     }];
 }
@@ -1370,10 +1468,24 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     UIView *sp = [UIView new];
     UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[h, sp, all]];
     head.alignment = UIStackViewAlignmentCenter;
+    // A row you can swipe sideways: two cards fit on screen, the rest of the recent downloads wait off to the side.
     self.recentRow = [UIStackView new];
     self.recentRow.spacing = 12;
-    self.recentRow.distribution = UIStackViewDistributionFillEqually;
-    self.recentBlock = [self vstack:@[head, self.recentRow] spacing:10];
+    self.recentRow.alignment = UIStackViewAlignmentTop;
+    self.recentRow.translatesAutoresizingMaskIntoConstraints = NO;
+    UIScrollView *rs = [UIScrollView new];
+    rs.showsHorizontalScrollIndicator = NO;
+    rs.alwaysBounceHorizontal = YES;
+    rs.clipsToBounds = YES;
+    [rs addSubview:self.recentRow];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.recentRow.topAnchor constraintEqualToAnchor:rs.contentLayoutGuide.topAnchor],
+        [self.recentRow.bottomAnchor constraintEqualToAnchor:rs.contentLayoutGuide.bottomAnchor],
+        [self.recentRow.leadingAnchor constraintEqualToAnchor:rs.contentLayoutGuide.leadingAnchor],
+        [self.recentRow.trailingAnchor constraintEqualToAnchor:rs.contentLayoutGuide.trailingAnchor],
+        [rs.heightAnchor constraintEqualToAnchor:self.recentRow.heightAnchor]]];
+    self.recentScroll = rs;
+    self.recentBlock = [self vstack:@[head, rs] spacing:10];
 
     UIStackView *s = [self vstack:@[self.nowCard, self.recentBlock] spacing:22];
     self.activitySection = [self padded:s top:14 bottom:6];
@@ -1403,15 +1515,19 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     for (VGItem *i in [VGEngine shared].items) {
         if (i.vault) continue;
         [recent addObject:i];
-        if (recent.count == 2) break;
+        if (recent.count == 12) break;
     }
     // Only rebuild the thumbnails when the list changed.
     NSString *key = [[recent valueForKey:@"fileName"] componentsJoinedByString:@"|"];
     if (![key isEqualToString:self.recentRow.accessibilityIdentifier]) {
         self.recentRow.accessibilityIdentifier = key;
         for (UIView *v in self.recentRow.arrangedSubviews) [v removeFromSuperview];
-        for (VGItem *i in recent) [self.recentRow addArrangedSubview:[self recentCard:i]];
-        if (recent.count == 1) [self.recentRow addArrangedSubview:[UIView new]];
+        for (VGItem *i in recent) {
+            UIView *card = [self recentCard:i];
+            [self.recentRow addArrangedSubview:card];
+            [card.widthAnchor constraintEqualToAnchor:self.recentScroll.frameLayoutGuide.widthAnchor multiplier:0.5 constant:-6].active = YES;
+        }
+        self.recentScroll.contentOffset = CGPointZero;
     }
     self.recentBlock.hidden = recent.count == 0;
 }
@@ -1464,6 +1580,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     self.selected = ip.item;
+    self.userPicked = YES;
     [[UISelectionFeedbackGenerator new] selectionChanged];
     for (NSIndexPath *p in cv.indexPathsForVisibleItems) {
         [(VGQualityCell *)[cv cellForItemAtIndexPath:p] configure:self.video.options[p.item] selected:p.item == self.selected];

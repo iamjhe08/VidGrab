@@ -62,11 +62,11 @@ exit 0
 '''
 
 
-def daemon_plist(prefix):
+def daemon_plist(prefix, hud=None):
     # Same settings TrollSpeed uses for its jailbreak bubble service.
     return {
         'Label': DAEMON,
-        'ProgramArguments': [f'{prefix}/Applications/VidGrab.app/VidGrabHUD', '-daemon'],
+        'ProgramArguments': [hud or f'{prefix}/Applications/VidGrab.app/VidGrabHUD', '-daemon'],
         'RunAtLoad': True,
         'KeepAlive': True,
         'ThrottleInterval': 5,
@@ -127,8 +127,16 @@ def main():
 
         ld = os.path.join(root, prefix.lstrip('/'), 'Library', 'LaunchDaemons')
         os.makedirs(ld)
+        hud_path = None
+        if scheme == 'rootless':
+            # Rootless: the bubble service runs from the usual tools folder, not from inside the app.
+            bindir = os.path.join(root, prefix.lstrip('/'), 'usr', 'local', 'bin')
+            os.makedirs(bindir)
+            shutil.copy2(os.path.join(dest, 'VidGrabHUD'), os.path.join(bindir, 'VidGrabHUD'))
+            os.chmod(os.path.join(bindir, 'VidGrabHUD'), 0o755)
+            hud_path = f'{prefix}/usr/local/bin/VidGrabHUD'
         with open(os.path.join(ld, DAEMON + '.plist'), 'wb') as f:
-            plistlib.dump(daemon_plist(prefix), f)
+            plistlib.dump(daemon_plist(prefix, hud_path), f)
         os.chmod(os.path.join(ld, DAEMON + '.plist'), 0o644)
 
         size_kb = sum(os.path.getsize(os.path.join(r, n)) for r, _, fs in os.walk(root) for n in fs) // 1024

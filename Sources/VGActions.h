@@ -25,7 +25,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onEnded)(VGPlayerViewController *player);
 /// Playlist mode: shows previous and next buttons, shuffle and repeat. `onSkip` gets -1 (back) or +1 (next).
 @property (nonatomic) BOOL playlistMode;
+/// How far above the bottom a message should sit so it clears the open track list (0 when the list is closed).
+- (CGFloat)trackSheetLift;
+- (void)say:(NSString *)text icon:(NSString *)icon;   // a short message in the right spot: top centre, or above the Tracks list when it is open
 @property (nonatomic, copy, nullable) void (^onSkip)(VGPlayerViewController *player, NSInteger direction);
+/// Playlist mode: the track list for the "Tracks" button. Returns @{@"titles": NSArray<NSString *>, @"current": NSNumber}.
+@property (nonatomic, copy, nullable) NSDictionary *(^trackProvider)(void);
+/// Playlist mode: the viewer picked a track from the list (its position in the play order).
+@property (nonatomic, copy, nullable) void (^onPickTrack)(NSInteger position);
 /// Playlist mode: hide the picture and show the VidGrab banner (the sound keeps playing).
 @property (nonatomic) BOOL videoOff;
 @property (nonatomic) BOOL shuffleOn;
@@ -35,6 +42,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *positionText;   // for example "3 of 12"
 /// Plays another stream inside this same player, with no closing or reopening.
 - (void)swapToStreamItem:(AVPlayerItem *)item video:(VGVideo *)video audio:(BOOL)audio master:(BOOL)master variants:(nullable NSDictionary *)variants position:(NSString *)position;
+/// Moves the playing stream to another quality, keeping the position.
+- (void)switchToOption:(VGOption *)opt;
 /// Starts the current track again from the beginning (repeat one).
 - (void)restartTrack;
 /// Shows the paused end state (the playlist is over).
@@ -57,6 +66,9 @@ BOOL VGPlayerIsOnScreen(void);
 + (void)saveToFiles:(VGItem *)item from:(UIViewController *)vc;
 + (void)alert:(NSString *)title message:(nullable NSString *)message from:(UIViewController *)vc;
 + (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view;
+/// Same, with the message sitting `bottom` points above the bottom safe area (the default is 70).
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view bottom:(CGFloat)bottom;
++ (void)toast:(NSString *)text icon:(NSString *)icon in:(UIView *)view top:(CGFloat)top;
 
 /// Several downloads at once (Downloads > Select).
 + (void)saveItemsToPhotos:(NSArray<VGItem *> *)items from:(UIViewController *)vc;
