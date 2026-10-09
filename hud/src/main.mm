@@ -278,7 +278,8 @@ static const CGFloat kSize = 60;
                      completion:^(BOOL f) { [UIView animateWithDuration:0.1 animations:^{ self.bubble.transform = CGAffineTransformIdentity; }]; }];
     NSURL *u = [NSURL URLWithString:@"vidgrab://downloads"];
     if (!SBSOpenSensitiveURLAndUnlock((__bridge CFURLRef)u, 1))
-        SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(@"com.t4mag0.vidgrab", u, nil, nil, NO);
+        if (SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(@"com.t4mag0.vidgrab", u, nil, nil, NO))
+            SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(@"com.t4mag0.vidgrab.ts", u, nil, nil, NO);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)a shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)b { return YES; }
