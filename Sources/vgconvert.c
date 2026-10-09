@@ -501,6 +501,108 @@ end:
     return ret;
 }
 
+
+// ---------------------------------------------------------------- audio to WAV
+
+static void put32(unsigned char *p, unsigned v) { p[0] = v & 255; p[1] = (v >> 8) & 255; p[2] = (v >> 16) & 255; p[3] = (v >> 24) & 255; }
+static void put16(unsigned char *p, unsigned v) { p[0] = v & 255; p[1] = (v >> 8) & 255; }
+
+// Decodes the first sound stream and writes it as 16-bit PCM in a .wav (stereo at most, the source's own sample rate).
+int vg_audio_wav(const char *in, const char *out, vg_progress_cb progress, vg_cancel_cb cancel, void *ctx,
+                 char *err, size_t errlen) {
+    AVFormatContext *ifmt = NULL;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = NULL;
+    AVFrame *frame = NULL;
+    SwrContext *swr = NULL;
+    FILE *f = NULL;
+    int ret = VG_ERROR, r;
+    unsigned long long bytes = 0;
+    uint8_t *buf = NULL;
+    int bufSamples = 0;
+
+    if ((r = avformat_open_input(&ifmt, in, NULL, NULL)) < 0) { seterr(err, errlen, "Couldn't open the downloaded file", r); goto end; }
+    avformat_find_stream_info(ifmt, NULL);
+    int ai = pick_stream(ifmt, AVMEDIA_TYPE_AUDIO);
+    if (ai < 0) { seterr(err, errlen, "This file has no sound to convert", 0); goto end; }
+    AVStream *ist = ifmt->streams[ai];
+    const AVCodec *dc = avcodec_find_decoder(ist->codecpar->codec_id);
+    if (!dc) { seterr(err, errlen, "VidGrab can't read this kind of sound", 0); goto end; }
+    dec = avcodec_alloc_context3(dc);
+    avcodec_parameters_to_context(dec, ist->codecpar);
+    if ((r = avcodec_open2(dec, dc, NULL)) < 0) { seterr(err, errlen, "Couldn't open the sound decoder", r); goto end; }
+
+    int rate = dec->sample_rate > 0 ? dec->sample_rate : 44100;
+    int nch = dec->ch_layout.nb_channels >= 2 ? 2 : 1;
+    AVChannelLayout olay = {0}, ilay = {0};
+    av_channel_layout_default(&olay, nch);
+    if (dec->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC || dec->ch_layout.nb_channels == 0) av_channel_layout_default(&ilay, nch);
+    else av_channel_layout_copy(&ilay, &dec->ch_layout);
+    r = swr_alloc_set_opts2(&swr, &olay, AV_SAMPLE_FMT_S16, rate, &ilay, dec->sample_fmt, rate, 0, NULL);
+    if (r >= 0) r = swr_init(swr);
+    av_channel_layout_uninit(&ilay);
+    if (r < 0) { av_channel_layout_uninit(&olay); seterr(err, errlen, "Couldn't set up the sound converter", r); goto end; }
+
+    f = fopen(out, "wb");
+    if (!f) { av_channel_layout_uninit(&olay); seterr(err, errlen, "Couldn't write the output file", 0); goto end; }
+    unsigned char hdr[44];
+    memset(hdr, 0, sizeof hdr);
+    memcpy(hdr, "RIFF", 4); memcpy(hdr + 8, "WAVEfmt ", 8);
+    put32(hdr + 16, 16); put16(hdr + 20, 1); put16(hdr + 22, (unsigned)nch); put32(hdr + 24, (unsigned)rate);
+    put32(hdr + 28, (unsigned)(rate * nch * 2)); put16(hdr + 32, (unsigned)(nch * 2)); put16(hdr + 34, 16);
+    memcpy(hdr + 36, "data", 4);
+    fwrite(hdr, 1, sizeof hdr, f);
+
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    double dur = ifmt->duration > 0 ? ifmt->duration / (double)AV_TIME_BASE : 0;
+    int64_t start = ist->start_time != AV_NOPTS_VALUE ? ist->start_time : 0;
+    for (;;) {
+        r = av_read_frame(ifmt, pkt);
+        int eof = r < 0;
+        if (!eof && pkt->stream_index != ai) { av_packet_unref(pkt); continue; }
+        if (cancel && cancel(ctx)) { if (!eof) av_packet_unref(pkt); av_channel_layout_uninit(&olay); ret = VG_CANCELLED; goto end; }
+        if (!eof && progress && dur > 0 && pkt->pts != AV_NOPTS_VALUE) progress(ctx, clamp01((pkt->pts - start) * av_q2d(ist->time_base) / dur));
+        avcodec_send_packet(dec, eof ? NULL : pkt);   // a damaged packet is simply skipped
+        if (!eof) av_packet_unref(pkt);
+        while (avcodec_receive_frame(dec, frame) == 0) {
+            int n = frame->nb_samples;
+            if (n <= 0) { av_frame_unref(frame); continue; }
+            if (n > bufSamples) {
+                av_free(buf);
+                buf = av_malloc((size_t)n * (size_t)nch * 2 + 64);
+                bufSamples = n;
+                if (!buf) { av_channel_layout_uninit(&olay); seterr(err, errlen, "Out of memory", 0); goto end; }
+            }
+            int got = swr_convert(swr, &buf, n, (const uint8_t **)frame->extended_data, n);
+            if (got > 0) { fwrite(buf, (size_t)nch * 2, (size_t)got, f); bytes += (unsigned long long)got * (unsigned)nch * 2; }
+            av_frame_unref(frame);
+        }
+        if (eof) break;
+    }
+    av_channel_layout_uninit(&olay);
+    if (bytes == 0) { seterr(err, errlen, "No sound could be read from this file", 0); goto end; }
+    put32(hdr + 4, (unsigned)(bytes + 36));
+    put32(hdr + 40, (unsigned)bytes);
+    fseek(f, 0, SEEK_SET);
+    fwrite(hdr, 1, sizeof hdr, f);
+    fclose(f);
+    f = NULL;
+    if (progress) progress(ctx, 1.0);
+    ret = VG_OK;
+
+end:
+    if (f) fclose(f);
+    av_free(buf);
+    swr_free(&swr);
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    avformat_close_input(&ifmt);
+    if (ret != VG_OK) remove(out);
+    return ret;
+}
+
 // ---------------------------------------------------------------- video to MP4
 
 // MKV/WebM store only presentation times. MP4 also needs decode-order times; they are

@@ -242,6 +242,17 @@ def _is_vp9(f):
 _CAN_CONVERT = bool(getattr(vgnative, 'can_convert', lambda: False)())
 
 
+_AUDIO_IDS = ('audio', 'mp3', 'wav', 'flac')
+
+
+def _has_lossless(info):
+    """True when the site really offers sound stored losslessly (so FLAC is honest, not a re-wrapped MP3)."""
+    for f in (info.get('formats') or []):
+        if (f.get('vcodec') in (None, 'none')) and (str(f.get('acodec') or '').split('.')[0] in ('flac', 'alac') or f.get('ext') in ('flac', 'wav')):
+            return True
+    return False
+
+
 def _audio_plan(info):
     combined, _, audio, other = _kinds(info)
     good = [f for f in audio if _m4a(f) and not _hls(f)]
@@ -356,6 +367,33 @@ def _options(info):
                 'audio': True,
                 'size': mp3_size,
             })
+            wav_size = 44100 * 2 * 2 * duration if duration else 0
+            opts.append({
+                'id': 'wav',
+                'title': 'WAV',
+                'res': 'WAV',
+                'detail': ' · '.join(x for x in (_fmt_size(wav_size), 'WAV lossless copy') if x),
+                'size_text': _fmt_size(wav_size) or '',
+                'fmt': 'WAV',
+                'convert': False,
+                'photos': False,
+                'audio': True,
+                'size': wav_size,
+            })
+            if _has_lossless(info):
+                flac_size = wav_size * 0.6
+                opts.append({
+                    'id': 'flac',
+                    'title': 'FLAC',
+                    'res': 'FLAC',
+                    'detail': ' · '.join(x for x in (_fmt_size(flac_size), 'FLAC lossless') if x),
+                    'size_text': _fmt_size(flac_size) or '',
+                    'fmt': 'FLAC',
+                    'convert': False,
+                    'photos': False,
+                    'audio': True,
+                    'size': flac_size,
+                })
     return opts
 
 
@@ -757,7 +795,7 @@ def link(url, option_id, cache_dir, cookiefile='', extra=''):
                 info = next((e for e in (info.get('entries') or []) if e), None)
         if not info:
             return json.dumps({'error': 'No video found at that link.'})
-        if option_id in ('audio', 'mp3'):
+        if option_id in _AUDIO_IDS:
             fmts, _ = _audio_plan(info)
         else:
             h = None if option_id in ('', 'best') else int(option_id.split(':', 1)[1])
@@ -807,7 +845,7 @@ def links(url, option_id, cache_dir, cookiefile='', extra=''):
                 out.append({'label': label, 'url': u, 'headers': headers})
 
         try:
-            if option_id in ('audio', 'mp3'):
+            if option_id in _AUDIO_IDS:
                 fmts, _ = _audio_plan(info)
             else:
                 h = None if option_id in ('', 'best') else int(option_id.split(':', 1)[1])
@@ -913,9 +951,9 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
 
             if option_id.startswith('q:'):
                 option_id = _pick_option(info, option_id[2:])   # playlist downloads: one quality for all
-            if option_id in ('audio', 'mp3'):
+            if option_id in _AUDIO_IDS:
                 fmts, photos = _audio_plan(info)
-                kind = 'mp3' if option_id == 'mp3' else 'audio'
+                kind = option_id if option_id in ('mp3', 'wav', 'flac') else 'audio'
             else:
                 h = None if option_id == 'best' else int(option_id.split(':', 1)[1])
                 kind, fmts, photos = _plan(info, h)
@@ -963,7 +1001,7 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
     title = info.get('title') or 'video'
     safe = re.sub(r'[\\/:*?"<>|\n\r\t]+', ' ', title).strip()[:80] or 'video'
     return {
-        'kind': kind if kind in ('merge', 'convert', 'audio', 'mp3') else 'single',
+        'kind': kind if kind in ('merge', 'convert', 'audio', 'mp3', 'wav', 'flac') else 'single',
         'title': info.get('title') or '',
         'uploader': info.get('uploader') or info.get('channel') or '',
         'files': files,

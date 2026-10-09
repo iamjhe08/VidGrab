@@ -199,6 +199,7 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
 @property (nonatomic, strong) UILabel *titleLabel, *statusLabel, *percentLabel;
 @property (nonatomic, strong) VGProgressBar *bar;
 @property (nonatomic, strong) UIButton *action;
+@property (nonatomic, strong) UIButton *pauseButton;
 @property (nonatomic, weak) VGTask *task;
 @property (nonatomic, copy) NSString *thumbURL;
 @end
@@ -231,7 +232,9 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
         _bar = [VGProgressBar new];
         _action = [UIButton buttonWithType:UIButtonTypeSystem];
         _action.tintColor = VGSecondary;
-        for (UIView *v in @[_thumb, _titleLabel, _statusLabel, _percentLabel, _bar, _action]) {
+        _pauseButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        _pauseButton.tintColor = VGSecondary;
+        for (UIView *v in @[_thumb, _titleLabel, _statusLabel, _percentLabel, _bar, _action, _pauseButton]) {
             v.translatesAutoresizingMaskIntoConstraints = NO;
             [self.contentView addSubview:v];
         }
@@ -243,7 +246,11 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
             [_thumb.widthAnchor constraintEqualToConstant:128],
             [_thumb.heightAnchor constraintEqualToConstant:72],
             [_titleLabel.leadingAnchor constraintEqualToAnchor:_thumb.trailingAnchor constant:12],
-            [_titleLabel.trailingAnchor constraintEqualToAnchor:_action.leadingAnchor constant:-4],
+            [_titleLabel.trailingAnchor constraintEqualToAnchor:_pauseButton.leadingAnchor constant:-2],
+            [_pauseButton.trailingAnchor constraintEqualToAnchor:_action.leadingAnchor constant:2],
+            [_pauseButton.centerYAnchor constraintEqualToAnchor:c.centerYAnchor],
+            [_pauseButton.widthAnchor constraintEqualToConstant:36],
+            [_pauseButton.heightAnchor constraintEqualToConstant:44],
             [_titleLabel.topAnchor constraintEqualToAnchor:_thumb.topAnchor constant:1],
             [_statusLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
             [_statusLabel.trailingAnchor constraintEqualToAnchor:_percentLabel.leadingAnchor constant:-6],
@@ -270,6 +277,9 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
     if (failed) {
         self.statusLabel.text = t.error.length ? [@"Failed · " stringByAppendingString:t.error] : @"Failed";
         self.statusLabel.textColor = VGAccent;
+    } else if (t.state == VGTaskPaused) {
+        self.statusLabel.text = [NSString stringWithFormat:@"Paused · %@", t.option.res];
+        self.statusLabel.textColor = VGSecondary;
     } else if (t.state == VGTaskQueued) {
         self.statusLabel.text = [NSString stringWithFormat:@"Waiting · %@", t.option.res];
         self.statusLabel.textColor = VGSecondary;
@@ -286,6 +296,13 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
                  forState:UIControlStateNormal];
     self.action.tintColor = failed ? VGAccent : VGTertiary;
     self.action.accessibilityLabel = failed ? @"Try again" : @"Cancel download";
+    BOOL paused = t.state == VGTaskPaused;
+    self.pauseButton.hidden = failed || t.state == VGTaskQueued;
+    [self.pauseButton setImage:[UIImage systemImageNamed:paused ? @"play.circle.fill" : @"pause.circle.fill"
+                                          withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold]]
+                      forState:UIControlStateNormal];
+    self.pauseButton.tintColor = paused ? VGAccent : VGTertiary;
+    self.pauseButton.accessibilityLabel = paused ? @"Resume download" : @"Pause download";
 
     NSString *url = t.video.thumbnail;
     if (![url isEqualToString:self.thumbURL]) {
@@ -307,8 +324,11 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
 // Table sections: downloads in progress, folders, saved videos.
 enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 
-@interface VGDownloadsViewController () <UITableViewDataSource, UITableViewDelegate, PHPickerViewControllerDelegate, UIDocumentPickerDelegate>
+@interface VGDownloadsViewController () <UITableViewDataSource, UITableViewDelegate, PHPickerViewControllerDelegate, UIDocumentPickerDelegate, UISearchResultsUpdating>
 @property (nonatomic) BOOL vaultMode;
+@property (nonatomic, copy) NSString *searchText;
+@property (nonatomic) NSInteger secretTaps;
+@property (nonatomic) CFAbsoluteTime lastSecretTap;
 /// Set when this screen shows the inside of one folder.
 @property (nonatomic, strong, nullable) VGFolder *folder;
 @property (nonatomic, strong) NSArray<VGFolder *> *folders;
@@ -342,7 +362,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = self.vaultMode ? @"Private Vault" : (self.folder.name ?: @"Downloads");
+    self.title = self.vaultMode ? @"Private Vault 2.0" : (self.folder.name ?: @"Downloads");
     self.view.backgroundColor = VGBackground;
     BOOL isMain = !self.vaultMode && !self.folder;
     // The main list draws its own big title (see headerTitle); the folder and vault screens keep the normal large title.
@@ -376,6 +396,16 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     self.addFolderItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"folder.badge.plus"] style:UIBarButtonItemStylePlain target:self action:@selector(newFolderTapped)];
     self.addFolderItem.accessibilityLabel = @"New folder";
     [self showNormalBarButtons];
+    if (self.vaultMode) {
+        UISearchController *sc = [[UISearchController alloc] initWithSearchResultsController:nil];
+        sc.searchResultsUpdater = self;
+        sc.obscuresBackgroundDuringPresentation = NO;
+        sc.searchBar.placeholder = self.folder ? @"Search this folder" : @"Search the vault";
+        sc.searchBar.tintColor = VGAccent;
+        self.navigationItem.searchController = sc;
+        self.navigationItem.hidesSearchBarWhenScrolling = NO;
+        self.definesPresentationContext = YES;
+    }
 
     self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.table.backgroundColor = VGBackground;
@@ -397,7 +427,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     self.storageLabel.textColor = VGTertiary;
     BOOL plainHeader = self.vaultMode || self.folder != nil;
     CGFloat rowH = plainHeader ? 0 : 66;   // the title row: "Downloads" on the left, the storage card on the right
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, plainHeader ? 30 : 100 + rowH)];
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, plainHeader ? 30 : 38 + rowH)];
     if (!plainHeader) {
         self.headerTitle = [UILabel new];
         self.headerTitle.text = @"Downloads";
@@ -436,7 +466,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
             // Never slides under the title: on a narrow phone the card gets smaller instead.
             [self.storageCard.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.headerTitle.trailingAnchor constant:10],
         ]];
-        // The Private Vault entry, above the list.
+        // The Private Vault 2.0 entry, above the list.
         UIButtonConfiguration *vc = [UIButtonConfiguration filledButtonConfiguration];
         vc.baseBackgroundColor = VGSurface;
         vc.baseForegroundColor = VGText;
@@ -454,8 +484,11 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
         [self.vaultButton addTarget:self action:@selector(openVault) forControlEvents:UIControlEventTouchUpInside];
         self.vaultButton.frame = CGRectMake(16, 6 + rowH, 100, 56);
         self.vaultButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        self.vaultButton.hidden = YES;   // Private Vault 2.0 has no button: hold "Downloads" for 3 seconds
         [header addSubview:self.vaultButton];
-        self.storageLabel.frame = CGRectMake(16, 72 + rowH, 400, 22);
+        self.storageLabel.frame = CGRectMake(16, 10 + rowH, 400, 22);
+        self.headerTitle.userInteractionEnabled = YES;
+        [self.headerTitle addGestureRecognizer:[self secretHold]];
     } else {
         self.storageLabel.frame = CGRectMake(16, 0, 400, 22);
     }
@@ -500,7 +533,26 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     self.vaultButton.frame = f;
 }
 
-#pragma mark Private Vault
+#pragma mark Private Vault 2.0
+
+/// The way into the vault: press and hold the word "Downloads" for 1.5 seconds.
+- (UILongPressGestureRecognizer *)secretHold {
+    UILongPressGestureRecognizer *g = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(secretHeld:)];
+    g.minimumPressDuration = 1.5;
+    g.allowableMovement = 30;
+    return g;
+}
+
+- (void)secretHeld:(UILongPressGestureRecognizer *)g {
+    if (g.state != UIGestureRecognizerStateBegan) return;   // fires once the 1.5 seconds are up
+    [[UIImpactFeedbackGenerator new] impactOccurred];
+    [self openVault];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)sc {
+    self.searchText = [sc.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    [self reload];
+}
 
 - (void)openVault {
     __weak typeof(self) ws = self;
@@ -525,7 +577,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 - (void)moveItem:(VGItem *)item toVault:(BOOL)vault {
     [[VGEngine shared] setItem:item inVault:vault];
     [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
-    [VGActions toast:vault ? @"Moved to Private Vault" : @"Moved back to Downloads"
+    [VGActions toast:vault ? @"Moved to Private Vault 2.0" : @"Moved back to Downloads"
                 icon:vault ? @"lock.fill" : @"lock.open.fill" in:self.view.window ?: self.view];
 }
 
@@ -581,17 +633,24 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
         shownBytes += i.bytes;
         // The main list holds only videos that are not in a folder; a folder screen holds just its own.
         if (self.folder) { if (![i.folderID isEqualToString:self.folder.identifier]) continue; }
-        else if (!self.vaultMode && [[VGEngine shared] folderWithID:i.folderID]) continue;
+        else if ([[VGEngine shared] folderWithID:i.folderID]) continue;
+        if (self.searchText.length && [[@[i.title ?: @"", i.site ?: @"", i.artist ?: @""] componentsJoinedByString:@" "] rangeOfString:self.searchText options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location == NSNotFound) continue;
         [mine addObject:i];
     }
     [self.storageCard refreshWithVidGrabBytes:[VGEngine shared].totalBytes];
     self.items = mine;
     self.tasks = (self.vaultMode || self.folder) ? @[] : [VGEngine shared].tasks;
-    self.folders = (self.vaultMode || self.folder) ? @[] : [VGEngine shared].folders;
+    NSArray<VGFolder *> *allFolders = self.folder ? @[] : (self.vaultMode ? [VGEngine shared].vaultFolders : [VGEngine shared].folders);
+    if (self.searchText.length) {
+        NSMutableArray *m = [NSMutableArray array];
+        for (VGFolder *f in allFolders) if ([f.name rangeOfString:self.searchText options:NSCaseInsensitiveSearch].location != NSNotFound) [m addObject:f];
+        allFolders = m;
+    }
+    self.folders = allFolders;
     if (self.folder && !self.selecting) self.title = [[VGEngine shared] folderWithID:self.folder.identifier].name;
     if (self.vaultButton) {
         UIButtonConfiguration *c = self.vaultButton.configuration;
-        c.attributedTitle = [[NSAttributedString alloc] initWithString:@"Private Vault" attributes:@{NSFontAttributeName: VGFont(16, UIFontWeightBold)}];
+        c.attributedTitle = [[NSAttributedString alloc] initWithString:@"Private Vault 2.0" attributes:@{NSFontAttributeName: VGFont(16, UIFontWeightBold)}];
         c.attributedSubtitle = [[NSAttributedString alloc] initWithString:locked ? [NSString stringWithFormat:@"%lu locked · Face ID or passcode", (unsigned long)locked] : @"Hide videos behind Face ID or passcode"
                                                                attributes:@{NSFontAttributeName: VGFont(12, UIFontWeightMedium), NSForegroundColorAttributeName: VGSecondary}];
         self.vaultButton.configuration = c;
@@ -639,6 +698,15 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     [self reload];
 }
 
+- (void)pauseAction:(UIButton *)sender {
+    UIView *v = sender;
+    while (v && ![v isKindOfClass:VGTaskCell.class]) v = v.superview;
+    VGTask *t = ((VGTaskCell *)v).task;
+    if (!t) return;
+    if (t.state == VGTaskPaused) [[VGEngine shared] resumeTask:t];
+    else [[VGEngine shared] pauseTask:t];
+}
+
 - (void)taskAction:(UIButton *)sender {
     UIView *v = sender;
     while (v && ![v isKindOfClass:VGTaskCell.class]) v = v.superview;
@@ -671,7 +739,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
         [tools addObject:fix];
     }
     BOOL inVault = item.vault;
-    if (!inVault) {
+    if (YES) {
         UIMenu *fm = [UIMenu menuWithTitle:@"Move to Folder" image:[UIImage systemImageNamed:@"folder"] identifier:nil options:0
                                   children:[self folderChoicesFor:@[item] afterMove:nil]];
         [tools insertObject:fm atIndex:0];
@@ -682,6 +750,20 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     UIAction *del = [UIAction actionWithTitle:@"Delete" image:[UIImage systemImageNamed:@"trash"] identifier:nil
                                       handler:^(UIAction *a) { [ws confirmDelete:item]; }];
     del.attributes = UIMenuElementAttributesDestructive;
+    if (inVault) {
+        // Private Vault 2.0: everything that leaves the vault is grouped under Export.
+        NSMutableArray *ex = [NSMutableArray array];
+        if (item.photos) [ex addObject:[UIAction actionWithTitle:@"Photos" image:[UIImage systemImageNamed:@"photo.on.rectangle.angled"] identifier:nil handler:^(UIAction *a) { [VGActions saveToPhotos:item from:ws]; }]];
+        [ex addObject:[UIAction actionWithTitle:@"Files" image:[UIImage systemImageNamed:@"folder"] identifier:nil handler:^(UIAction *a) { [VGActions saveToFiles:item from:ws]; }]];
+        [ex addObject:[UIAction actionWithTitle:@"Downloads (keep a copy here too)" image:[UIImage systemImageNamed:@"arrow.down.circle"] identifier:nil handler:^(UIAction *a) {
+            [[VGEngine shared] copyItemToDownloads:item completion:^(NSString *err) {
+                if (err) [VGActions alert:@"Couldn't export it" message:err from:ws];
+                else [VGActions toast:@"Copied to Downloads" icon:@"arrow.down.circle.fill" in:ws.view.window ?: ws.view];
+            }];
+        }]];
+        [ex addObject:[UIAction actionWithTitle:@"Share…" image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil handler:^(UIAction *a) { [VGActions share:item from:ws source:source]; }]];
+        actions = [NSMutableArray arrayWithObjects:actions[0], [UIMenu menuWithTitle:@"Export" image:[UIImage systemImageNamed:@"square.and.arrow.up.on.square"] identifier:nil options:0 children:ex], nil];
+    }
     UIMenu *main = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:actions];
     UIMenu *toolMenu = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:tools];
     return [UIMenu menuWithChildren:@[main, toolMenu, del]];
@@ -756,7 +838,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     [out addObject:[UIAction actionWithTitle:@"New Folder\u2026" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
                                      handler:^(UIAction *a) { [ws newFolderFor:items afterMove:after]; }]];
     NSMutableArray<UIMenuElement *> *list = [NSMutableArray array];
-    for (VGFolder *f in [VGEngine shared].folders) {
+    for (VGFolder *f in (self.vaultMode ? [VGEngine shared].vaultFolders : [VGEngine shared].folders)) {
         UIAction *a = [UIAction actionWithTitle:f.name image:[self folderIcon:f] identifier:nil handler:^(UIAction *x) {
             [ws moveItems:items toFolder:f];
             if (after) after();
@@ -792,7 +874,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 - (void)newFolderFor:(nullable NSArray<VGItem *> *)items afterMove:(nullable void (^)(void))after {
     __weak typeof(self) ws = self;
     UINavigationController *sheet = [VGFolderEditorViewController sheetWithFolder:nil onSave:^(NSString *name, NSString *hex) {
-        VGFolder *f = [[VGEngine shared] createFolderNamed:name colorHex:hex];
+        VGFolder *f = [[VGEngine shared] createFolderNamed:name colorHex:hex vault:ws.vaultMode];
         if (items.count) [ws moveItems:items toFolder:f];
         else [VGActions toast:[NSString stringWithFormat:@"Folder \u201C%@\u201D made", f.name] icon:@"folder.fill" in:ws.view.window ?: ws.view];
         if (after) after();
@@ -908,7 +990,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     if (item) {
         self.importOK++;
         if (self.vaultMode) [[VGEngine shared] setItem:item inVault:YES];   // imported while inside the vault: keep it there
-        else if (self.folder) [[VGEngine shared] setItems:@[item] folder:self.folder];   // imported inside a folder: it goes in that folder
+        if (self.folder) [[VGEngine shared] setItems:@[item] folder:self.folder];   // imported inside a folder: it goes in that folder
     } else if (err.length) {
         [self.importErrors addObject:err];
     }
@@ -949,10 +1031,10 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
 
 - (void)showNormalBarButtons {
     BOOL can = self.items.count > 0;
-    if (self.vaultMode) {
+    if (self.vaultMode && !self.folder) {
         self.navigationItem.leftBarButtonItem = nil;
-        self.navigationItem.rightBarButtonItems = can ? @[self.selectItem, self.importItem] : @[self.importItem];
-    } else if (self.folder) {
+        self.navigationItem.rightBarButtonItems = can ? @[self.selectItem, self.importItem, self.addFolderItem] : @[self.importItem, self.addFolderItem];
+    } else if (self.vaultMode || self.folder) {
         self.navigationItem.leftBarButtonItem = nil;   // keeps the back button
         self.navigationItem.rightBarButtonItems = can ? @[self.selectItem, self.importItem] : @[self.importItem];
     } else {
@@ -999,7 +1081,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
     UIEdgeInsets in = self.table.contentInset;
     in.bottom = 76;
     self.table.contentInset = in;
-    self.title = self.vaultMode ? @"Private Vault" : (self.folder ? [[VGEngine shared] folderWithID:self.folder.identifier].name : @"Downloads");
+    self.title = self.vaultMode ? @"Private Vault 2.0" : (self.folder ? [[VGEngine shared] folderWithID:self.folder.identifier].name : @"Downloads");
     [self showNormalBarButtons];
     [self dimFolders:NO];
     [NSNotificationCenter.defaultCenter postNotificationName:VGSelectModeDidChangeNotification object:@NO];
@@ -1075,7 +1157,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
     self.vaultAction = [self actionButton:self.vaultMode ? @"Unlock" : @"Vault" icon:self.vaultMode ? @"lock.open" : @"lock" tint:VGText action:@selector(batchVault)];
     UIButton *del = [self actionButton:@"Delete" icon:@"trash" tint:VGHex(0xFF5A5F) action:@selector(batchDelete)];
     NSMutableArray<UIButton *> *buttons = [@[photos, files, share, self.vaultAction, del] mutableCopy];
-    if (!self.vaultMode) {
+    if (YES) {
         // A menu that is built each time it opens, so it always lists the folders as they are now.
         self.folderAction = [self actionButton:@"Folder" icon:@"folder.badge.plus" tint:VGText action:@selector(stopSelecting)];
         [self.folderAction removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
@@ -1130,7 +1212,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
     [self stopSelecting];
     for (VGItem *i in sel) [[VGEngine shared] setItem:i inVault:toVault];
     NSString *what = sel.count == 1 ? @"1 video" : [NSString stringWithFormat:@"%lu videos", (unsigned long)sel.count];
-    [VGActions toast:toVault ? [NSString stringWithFormat:@"Moved %@ to Private Vault", what] : [NSString stringWithFormat:@"Moved %@ out of the vault", what]
+    [VGActions toast:toVault ? [NSString stringWithFormat:@"Moved %@ to Private Vault 2.0", what] : [NSString stringWithFormat:@"Moved %@ out of the vault", what]
                 icon:toVault ? @"lock.fill" : @"lock.open.fill" in:self.view.window ?: self.view];
 }
 
@@ -1202,6 +1284,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
         [c configure:self.tasks[ip.row]];
         [c.action removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
         [c.action addTarget:self action:@selector(taskAction:) forControlEvents:UIControlEventTouchUpInside];
+        [c.pauseButton addTarget:self action:@selector(pauseAction:) forControlEvents:UIControlEventTouchUpInside];
         return c;
     }
     if (ip.section == kSecFolders) {
@@ -1247,6 +1330,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
     [tv deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == kSecFolders) {
         VGDownloadsViewController *v = [VGDownloadsViewController new];
+        v.vaultMode = self.vaultMode;
         v.folder = self.folders[ip.row];
         [self.navigationController pushViewController:v animated:YES];
         return;

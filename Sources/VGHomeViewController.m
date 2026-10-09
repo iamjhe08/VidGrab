@@ -1,4 +1,6 @@
 #import "VGHomeViewController.h"
+#import "VGPlaylistStore.h"
+#import "VGSavedPlaylistsViewController.h"
 #import "VGEngine.h"
 #import "VGTheme.h"
 #import "VGActions.h"
@@ -55,7 +57,14 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic, strong) UIView *playlistSection;
 @property (nonatomic, strong) UILabel *playlistTitle, *playlistMeta;
 @property (nonatomic, strong) UIStackView *playlistRows;
-@property (nonatomic, strong) UIButton *playlistMore, *playlistAll, *playlistDownload;
+@property (nonatomic, strong) UIButton *playlistMore, *playlistAll, *playlistDownload, *playlistStream, *playlistSave;
+@property (nonatomic, copy) NSArray<VGVideo *> *streamQueue;
+@property (nonatomic) NSUInteger playlistStreamToken;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *queueOrder;
+@property (nonatomic) NSInteger queuePos, queueRepeat;
+@property (nonatomic) BOOL queueShuffle, queueStarted;
+@property (nonatomic) NSUInteger queueLoadID;
+@property (nonatomic, weak) VGPlayerViewController *queuePlayer;
 @property (nonatomic, strong) UISegmentedControl *modeControl;   // Download or Stream
 @property (nonatomic) BOOL opening;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *picked;
@@ -130,6 +139,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 - (void)viewDidLoad {
     [super viewDidLoad];
     [VGCrash breadcrumb:@"home screen"];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(openSavedNotification:) name:VGOpenSavedPlaylist object:nil];
     self.view.backgroundColor = VGBackground;
 
     // Header
@@ -242,9 +252,9 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     [hero addSubview:glow];
 
     UILabel *h1 = [self label:VGFont(38, UIFontWeightHeavy) color:VGText lines:0];
-    h1.text = @"Copy a link.\nWe'll do the rest.";
+    h1.text = @"Download from anywhere.";
     UILabel *sub = [self label:VGFont(16, UIFontWeightRegular) color:VGSecondary lines:0];
-    sub.text = @"Copy a video or playlist link in any app and come back. It shows up here, ready to download.";
+    sub.text = @"Copy a video or playlist link from any app. Return to VidGrab, and your link is automatically detected and ready to download.";
     UIStackView *s = [self vstack:@[h1, sub] spacing:10];
     s.translatesAutoresizingMaskIntoConstraints = NO;
     [hero addSubview:s];
@@ -514,6 +524,9 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle.fill"
                                                                 withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:30 weight:UIImageSymbolWeightBold]]];
     icon.tintColor = VGAccent;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [icon.widthAnchor constraintEqualToConstant:34].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:34].active = YES;
     [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     UILabel *t = [self label:VGFont(20, UIFontWeightHeavy) color:VGText lines:1];
     t.text = @"Downloaded";
@@ -1004,10 +1017,34 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
     self.playlistDownload = VGPrimaryButton(@"Download", @"arrow.down.circle.fill");
     [self.playlistDownload addTarget:self action:@selector(downloadPlaylist) forControlEvents:UIControlEventTouchUpInside];
+    self.playlistStream = [UIButton buttonWithType:UIButtonTypeCustom];
+    [self.playlistStream setTitle:@"  Stream selected" forState:UIControlStateNormal];
+    [self.playlistStream setImage:[UIImage systemImageNamed:@"play.fill"] forState:UIControlStateNormal];
+    self.playlistStream.titleLabel.font = VGFont(16, UIFontWeightBold);
+    self.playlistStream.tintColor = VGText;
+    [self.playlistStream setTitleColor:VGText forState:UIControlStateNormal];
+    self.playlistStream.backgroundColor = VGSurface2;
+    self.playlistStream.layer.cornerRadius = 14;
+    self.playlistStream.layer.cornerCurve = kCACornerCurveContinuous;
+    self.playlistStream.layer.borderWidth = 1;
+    self.playlistStream.layer.borderColor = VGStroke.CGColor;
+    [self.playlistStream.heightAnchor constraintEqualToConstant:50].active = YES;
+    [self.playlistStream addTarget:self action:@selector(streamPlaylist) forControlEvents:UIControlEventTouchUpInside];
+    self.playlistSave = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.playlistSave.titleLabel.font = VGFont(16, UIFontWeightBold);
+    self.playlistSave.tintColor = VGText;
+    [self.playlistSave setTitleColor:VGText forState:UIControlStateNormal];
+    self.playlistSave.backgroundColor = VGSurface2;
+    self.playlistSave.layer.cornerRadius = 14;
+    self.playlistSave.layer.cornerCurve = kCACornerCurveContinuous;
+    self.playlistSave.layer.borderWidth = 1;
+    self.playlistSave.layer.borderColor = VGStroke.CGColor;
+    [self.playlistSave.heightAnchor constraintEqualToConstant:50].active = YES;
+    [self.playlistSave addTarget:self action:@selector(savePlaylistTapped) forControlEvents:UIControlEventTouchUpInside];
     UILabel *note = [self label:VGFont(12, UIFontWeightMedium) color:VGTertiary lines:0];
-    note.text = @"Each video downloads in the chosen quality, or the closest one it has. They show up in Downloads.";
+    note.text = @"Tick the videos you want. Download saves each one in the chosen quality (they show up in Downloads). Stream plays them one after another in VidGrab's player. Save playlist keeps the list (nothing is downloaded) so you can open it again from the playlist button at the top left of Library.";
 
-    UIStackView *s = [self vstack:@[tag, self.playlistTitle, head, list, qrow, self.playlistDownload, note] spacing:12];
+    UIStackView *s = [self vstack:@[tag, self.playlistTitle, head, list, qrow, self.playlistDownload, self.playlistStream, self.playlistSave, note] spacing:12];
     [s setCustomSpacing:4 afterView:tag];
     [s setCustomSpacing:6 afterView:self.playlistTitle];
     UIView *card = [self card:s];
@@ -1025,6 +1062,46 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     self.showAllRows = NO;
     [self rebuildPlaylistRows];
     [self pickPlaylistQuality:self.playlistQualityButtons[1]];
+    [self refreshSaveButton];
+}
+
+- (void)refreshSaveButton {
+    BOOL saved = self.video.url.length && [VGPlaylistStore forURL:self.video.url] != nil;
+    [self.playlistSave setTitle:saved ? @"  Saved · tap to remove" : @"  Save playlist" forState:UIControlStateNormal];
+    [self.playlistSave setImage:[UIImage systemImageNamed:saved ? @"bookmark.fill" : @"bookmark"] forState:UIControlStateNormal];
+    self.playlistSave.tintColor = saved ? VGAccent : VGText;
+}
+
+- (void)savePlaylistTapped {
+    VGSavedPlaylist *have = [VGPlaylistStore forURL:self.video.url];
+    UIView *host = self.view.window ?: self.view;
+    if (have) {
+        [VGPlaylistStore remove:have];
+        [VGActions toast:@"Removed from saved playlists" icon:@"bookmark.slash" in:host];
+    } else {
+        [VGPlaylistStore save:self.video];
+        [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+        [VGActions toast:@"Playlist saved. Open it from the top left of Library" icon:@"bookmark.fill" in:host];
+    }
+    [self refreshSaveButton];
+}
+
+/// Opens a playlist saved earlier (no internet needed to see the list).
+- (void)showSavedPlaylist:(VGSavedPlaylist *)p {
+    [self clearAll];
+    self.video = [p asVideo];
+    self.field.text = p.url;
+    [self updateClear];
+    [self fillPlaylist];
+    [self setStep:VGStepPlaylist animated:YES];
+    [self.scroll setContentOffset:CGPointZero animated:YES];
+}
+
+- (void)openSavedNotification:(NSNotification *)n {
+    VGSavedPlaylist *p = [VGPlaylistStore withID:n.userInfo[@"id"] ?: @""];
+    if (!p) return;
+    self.tabBarController.selectedIndex = 0;
+    [self showSavedPlaylist:p];
 }
 
 - (void)rebuildPlaylistRows {
@@ -1039,7 +1116,12 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         [row addTarget:self action:@selector(togglePicked:) forControlEvents:UIControlEventTouchUpInside];
         UIImageView *check = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:on ? @"checkmark.circle.fill" : @"circle"]];
         check.tintColor = on ? VGAccent : VGTertiary;
-        [check.widthAnchor constraintEqualToConstant:24].active = YES;
+        check.contentMode = UIViewContentModeScaleAspectFit;
+        check.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightRegular];
+        [check.widthAnchor constraintEqualToConstant:26].active = YES;
+        [check.heightAnchor constraintEqualToConstant:26].active = YES;
+        [check setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [check setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
         UILabel *t = [self label:VGFont(14, UIFontWeightMedium) color:on ? VGText : VGSecondary lines:2];
         t.text = [NSString stringWithFormat:@"%lu. %@", (unsigned long)i + 1, e.title];
         UILabel *d = [self label:VGFont(12, UIFontWeightMedium) color:VGTertiary lines:1];
@@ -1089,6 +1171,8 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     }
     self.playlistDownload.enabled = n > 0;
     self.playlistDownload.alpha = n > 0 ? 1 : 0.4;
+    self.playlistStream.enabled = n > 0;
+    self.playlistStream.alpha = n > 0 ? 1 : 0.4;
 }
 
 - (void)togglePicked:(UIButton *)row {
@@ -1113,6 +1197,126 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 - (void)pickPlaylistQuality:(UIButton *)b {
     self.playlistQuality = @[@"best", @"1080", @"720", @"480", @"mp3"][(NSUInteger)b.tag];
     for (UIButton *x in self.playlistQualityButtons) [self stylePill:x on:x == b];
+}
+
+/// Plays the ticked videos one after another in VidGrab's player (one player; the tracks swap inside it).
+- (void)streamPlaylist {
+    NSMutableArray *q = [NSMutableArray array];
+    NSArray<VGVideo *> *entries = self.video.entries;
+    for (NSUInteger i = 0; i < entries.count && i < self.picked.count; i++) if ([self.picked[i] boolValue]) [q addObject:entries[i]];
+    if (!q.count) return;
+    self.streamQueue = q;
+    self.queueShuffle = NO;
+    self.queueRepeat = 0;
+    self.queuePlayer = nil;
+    self.queueStarted = NO;
+    self.queueOrder = [NSMutableArray array];
+    for (NSUInteger i = 0; i < q.count; i++) [self.queueOrder addObject:@(i)];
+    ++self.playlistStreamToken;
+    self.playlistStream.enabled = NO;
+    [self loadQueuePos:0 direction:1];
+}
+
+/// The play order: in order, or shuffled with `first` (a queue index) leading.
+- (void)rebuildQueueOrderKeeping:(NSInteger)first {
+    NSMutableArray *o = [NSMutableArray array];
+    for (NSUInteger i = 0; i < self.streamQueue.count; i++) [o addObject:@(i)];
+    if (self.queueShuffle) {
+        NSMutableArray *rest = [NSMutableArray array];
+        for (NSNumber *n in o) if (n.integerValue != first) [rest addObject:n];
+        for (NSInteger i = (NSInteger)rest.count - 1; i > 0; i--) [rest exchangeObjectAtIndex:i withObjectAtIndex:arc4random_uniform((uint32_t)i + 1)];
+        o = [NSMutableArray array];
+        if (first >= 0) [o addObject:@(first)];
+        [o addObjectsFromArray:rest];
+        self.queuePos = first >= 0 ? 0 : -1;
+    } else {
+        self.queuePos = first >= 0 ? first : -1;
+    }
+    self.queueOrder = o;
+}
+
+- (void)queueModeChangedShuffle:(BOOL)shuffle repeat:(NSInteger)repeat {
+    NSInteger cur = (self.queuePos >= 0 && self.queuePos < (NSInteger)self.queueOrder.count) ? [self.queueOrder[self.queuePos] integerValue] : -1;
+    BOOL reorder = shuffle != self.queueShuffle;
+    self.queueShuffle = shuffle;
+    self.queueRepeat = repeat;
+    if (reorder) [self rebuildQueueOrderKeeping:cur];
+}
+
+/// Next or back. `ended` is YES when the track just ended by itself.
+- (void)queueStep:(NSInteger)dir ended:(BOOL)ended {
+    VGPlayerViewController *p = self.queuePlayer;
+    if (!p) return;
+    NSInteger n = (NSInteger)self.queueOrder.count, next;
+    if (ended && self.queueRepeat == 2) { [p restartTrack]; return; }
+    if (dir < 0) {
+        if ([p currentSeconds] > 3) { [p restartTrack]; return; }
+        next = self.queuePos - 1;
+        if (next < 0) {
+            if (self.queueRepeat == 1) next = n - 1; else { [p restartTrack]; return; }
+        }
+    } else {
+        next = self.queuePos + 1;
+        if (next >= n) {
+            if (self.queueRepeat == 1) {
+                if (self.queueShuffle) { [self rebuildQueueOrderKeeping:-1]; }
+                next = 0;
+            } else if (ended) { [p showFinished]; return; }
+            else { [p showMessage:@"That was the last one"]; return; }
+        }
+    }
+    [self loadQueuePos:next direction:dir];
+}
+
+- (void)loadQueuePos:(NSInteger)pos direction:(NSInteger)dir {
+    __weak typeof(self) ws = self;
+    NSArray<VGVideo *> *q = self.streamQueue;
+    NSInteger n = (NSInteger)self.queueOrder.count;
+    void (^reset)(void) = ^{ ws.playlistStream.enabled = YES; };
+    if (pos < 0 || pos >= n) { reset(); [self.queuePlayer showFinished]; return; }
+    if (self.queueStarted && !(self.queuePlayer && self.queuePlayer.presentingViewController)) { reset(); return; }   // the viewer closed the player
+    self.queuePos = pos;
+    NSUInteger token = self.playlistStreamToken;
+    NSUInteger load = ++self.queueLoadID;
+    VGVideo *video = q[[self.queueOrder[pos] unsignedIntegerValue]];
+    NSString *position = [NSString stringWithFormat:@"%ld of %lu", (long)pos + 1, (unsigned long)q.count];
+    UIView *host = self.queuePlayer.view ?: self.view.window ?: self.view;
+    [VGActions toast:[NSString stringWithFormat:@"Opening %@…", position] icon:@"play.circle.fill" in:host];
+    void (^skip)(void) = ^{
+        [VGActions toast:@"Couldn't stream one video, skipping it" icon:@"exclamationmark.triangle.fill" in:ws.queuePlayer.view ?: ws.view.window ?: ws.view];
+        [ws loadQueuePos:pos + (dir < 0 ? -1 : 1) direction:dir];
+    };
+    [[VGEngine shared] streamLinkFor:video option:nil completion:^(NSDictionary *info, NSString *error) {
+        if (!ws || ws.playlistStreamToken != token || ws.queueLoadID != load) return;
+        if (!info) { skip(); return; }
+        [VGPlayerViewController prepareStream:info completion:^(AVPlayerItem *item, NSString *err) {
+            if (!ws || ws.playlistStreamToken != token || ws.queueLoadID != load) return;
+            if (!item) { skip(); return; }
+            BOOL audio = [info[@"audio"] boolValue], master = [info[@"master"] boolValue];
+            NSDictionary *variants = [info[@"variants"] isKindOfClass:NSDictionary.class] ? info[@"variants"] : nil;
+            VGPlayerViewController *cur = ws.queuePlayer;
+            if (cur && cur.presentingViewController) {
+                [cur swapToStreamItem:item video:video audio:audio master:master variants:variants position:position];   // same player, no flicker
+            } else {
+                VGPlayerViewController *p = [VGPlayerViewController playerForStreamItem:item video:video option:nil audio:audio];
+                p.streamMaster = master;
+                p.streamVariants = variants;
+                p.positionText = position;
+                p.playlistMode = YES;
+                p.shuffleOn = ws.queueShuffle;
+                p.repeatMode = ws.queueRepeat;
+                p.onEnded = ^(VGPlayerViewController *x) { [ws queueStep:1 ended:YES]; };
+                p.onSkip = ^(VGPlayerViewController *x, NSInteger d) { [ws queueStep:d ended:NO]; };
+                p.onModeChange = ^(BOOL shuffle, NSInteger repeat) { [ws queueModeChangedShuffle:shuffle repeat:repeat]; };
+                ws.queuePlayer = p;
+                ws.queueStarted = YES;
+                UIViewController *top = ws;
+                while (top.presentedViewController) top = top.presentedViewController;
+                [top presentViewController:p animated:YES completion:^{ [p start]; }];
+            }
+            ws.playlistStream.enabled = YES;
+        }];
+    }];
 }
 
 - (void)downloadPlaylist {
@@ -1142,6 +1346,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
     icon.tintColor = VGAccent;
     [icon.widthAnchor constraintEqualToConstant:28].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:28].active = YES;
     icon.contentMode = UIViewContentModeScaleAspectFit;
     UIStackView *texts = [self vstack:@[self.nowTitle, self.nowBar] spacing:8];
     UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, texts, self.nowPercent]];

@@ -4,6 +4,7 @@
 #import "VGTheme.h"
 #import "VGHomeViewController.h"
 #import "VGDownloadsViewController.h"
+#import "VGLibraryViewController.h"
 #import "VGBrowserViewController.h"
 #import "VGBlocker.h"
 #import "VGProgressPill.h"
@@ -71,13 +72,18 @@
     browseNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Browse" image:[UIImage systemImageNamed:@"safari"]
                                                  selectedImage:[UIImage systemImageNamed:@"safari.fill"]];
 
+    UINavigationController *libNav = [[UINavigationController alloc] initWithRootViewController:[VGLibraryViewController new]];
+    libNav.navigationBar.prefersLargeTitles = YES;
+    libNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Library" image:[UIImage systemImageNamed:@"books.vertical"]
+                                              selectedImage:[UIImage systemImageNamed:@"books.vertical.fill"]];
+
     UINavigationController *dlNav = [[UINavigationController alloc] initWithRootViewController:[VGDownloadsViewController new]];
     dlNav.navigationBar.prefersLargeTitles = YES;
     dlNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Downloads" image:[UIImage systemImageNamed:@"arrow.down.circle"]
                                              selectedImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
 
     self.tabs = [UITabBarController new];
-    self.tabs.viewControllers = @[homeNav, browseNav, dlNav];
+    self.tabs.viewControllers = @[homeNav, browseNav, libNav, dlNav];
     self.tabs.tabBar.tintColor = VGText;
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -114,7 +120,7 @@
 
 - (void)openDownloads {
     [[UIImpactFeedbackGenerator new] impactOccurred];
-    self.tabs.selectedIndex = 2;
+    self.tabs.selectedIndex = 3;
     self.pill.suppressed = NO;
 }
 
@@ -130,11 +136,12 @@
 
 // vidgrab://download?url=<encoded link>  (for Shortcuts and share-sheet automations)
 - (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary *)options {
+    if ([url.host isEqualToString:@"bubble-ready"]) return YES;   // the Bubble helper app sends you back here
     // vidgrab://downloads  (tapping the floating bubble over another app)
     if ([url.host isEqualToString:@"downloads"]) {
         UIViewController *shown = self.tabs.presentedViewController;
         if (shown && ![shown isKindOfClass:NSClassFromString(@"VGPlayerViewController")]) [shown dismissViewControllerAnimated:NO completion:nil];
-        self.tabs.selectedIndex = 2;
+        self.tabs.selectedIndex = 3;
         self.pill.suppressed = NO;
         return YES;
     }

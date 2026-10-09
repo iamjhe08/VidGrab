@@ -34,6 +34,10 @@ NS_ASSUME_NONNULL_BEGIN
         title:(nullable NSString *)title artist:(nullable NSString *)artist
      progress:(nullable void (^)(double fraction))progress
    completion:(void (^)(NSString *_Nullable error))completion;
+/// Decodes the sound of a file into a 16-bit PCM .wav.
+- (void)wavFrom:(NSString *)input to:(NSString *)output
+      progress:(nullable void (^)(double fraction))progress
+    completion:(void (^)(NSString *_Nullable error))completion;
 - (void)cancel;
 @end
 

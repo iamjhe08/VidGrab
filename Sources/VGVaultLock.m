@@ -64,7 +64,7 @@ static NSString *const kWarnedKey = @"vgVaultWarned";
     [badge.bottomAnchor constraintEqualToAnchor:badgeRow.bottomAnchor].active = YES;
 
     UILabel *title = [UILabel new];
-    title.text = @"Private Vault Warning";
+    title.text = @"Private Vault 2.0\nWarning!";
     title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
     title.textColor = UIColor.whiteColor;
     title.textAlignment = NSTextAlignmentCenter;
@@ -472,7 +472,7 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
     self.bioButton.isAccessibilityElement = bio;
     self.forgotButton.hidden = !(unlock && self.onForgot);
     if (unlock) {
-        self.titleLabel.text = @"Private Vault";
+        self.titleLabel.text = @"Private Vault 2.0";
         if (!self.locked) self.subtitleLabel.text = self.showBio ? [NSString stringWithFormat:@"Enter your passcode or use %@", [VGVaultLock biometryName]]
                                                                  : @"Enter your vault passcode";
     } else if (self.mode == VGPadCreate) {
@@ -721,17 +721,17 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
     };
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Lock your vault"
                                                                message:bio ? [NSString stringWithFormat:@"With both, either one opens it. If %@ doesn't work, use your passcode, and the other way around. You can also turn the lock off.", bio]
-                                                                           : @"Choose how to protect your Private Vault. You can also turn the lock off."
+                                                                           : @"Choose how to protect your Private Vault 2.0. You can also turn the lock off."
                                                         preferredStyle:UIAlertControllerStyleActionSheet];
     if (bio) {
         [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Passcode and %@ (best)", bio] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
             [self createPasscodeFrom:vc title:@"Create a vault passcode" completion:^(NSString *code) {
                 if (!code) { done(NO); return; }
                 [self setPasscode:code];
-                [self bio:[NSString stringWithFormat:@"Turn on %@ for your Private Vault", bio] allowPhonePasscode:NO completion:^(BOOL ok) {
+                [self bio:[NSString stringWithFormat:@"Turn on %@ for your Private Vault 2.0", bio] allowPhonePasscode:NO completion:^(BOOL ok) {
                     [self setMethod:ok ? @"both" : @"passcode"];
                     if (!ok) [VGActions alert:[NSString stringWithFormat:@"%@ is off for now", bio]
-                                      message:[NSString stringWithFormat:@"Your passcode is set. You can turn on %@ later in Settings > Private Vault.", bio]
+                                      message:[NSString stringWithFormat:@"Your passcode is set. You can turn on %@ later in Settings > Private Vault 2.0.", bio]
                                          from:[self top:vc]];
                     done(YES);
                 }];
@@ -741,7 +741,7 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
     [a addAction:[UIAlertAction actionWithTitle:@"Passcode only" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { passcodeOnly(); }]];
     if (bio) {
         [a addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ only", bio] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-            [self bio:[NSString stringWithFormat:@"Turn on %@ for your Private Vault", bio] allowPhonePasscode:NO completion:^(BOOL ok) {
+            [self bio:[NSString stringWithFormat:@"Turn on %@ for your Private Vault 2.0", bio] allowPhonePasscode:NO completion:^(BOOL ok) {
                 if (!ok) { done(NO); return; }
                 [self deleteRecord];
                 [self setMethod:@"bio"];
@@ -777,7 +777,7 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
 
     if (![self usesPasscode]) {
         // Face ID only. iOS offers the iPhone passcode if Face ID fails.
-        [self bio:@"Unlock your Private Vault" allowPhonePasscode:YES completion:done];
+        [self bio:@"Unlock your Private Vault 2.0" allowPhonePasscode:YES completion:done];
         return;
     }
 
@@ -788,7 +788,7 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
         p.showBio = YES;
         p.autoBio = YES;
         p.onBio = ^{
-            [VGVaultLock bio:@"Unlock your Private Vault" allowPhonePasscode:NO completion:^(BOOL ok) {
+            [VGVaultLock bio:@"Unlock your Private Vault 2.0" allowPhonePasscode:NO completion:^(BOOL ok) {
                 if (ok) [wp closeWith:YES code:nil];
             }];
         };

@@ -819,7 +819,7 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     if (onSite && (self.pageHasVideo || self.captured.count || looksLikeVideoPage(self.web.URL))) {
         [self showSheetFor:self.web.URL.absoluteString fallback:nil];
     } else if ([VGEngine shared].activeCount) {
-        self.tabBarController.selectedIndex = 2;
+        self.tabBarController.selectedIndex = 3;
     }
 }
 

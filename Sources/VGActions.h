@@ -21,6 +21,28 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL streamMaster;
 /// Every quality that can be switched to at once (from the stream lookup): height -> items to play.
 @property (nonatomic, copy, nullable) NSDictionary *streamVariants;
+/// Called when the video plays to the end (used to move on to the next track of a streamed playlist).
+@property (nonatomic, copy, nullable) void (^onEnded)(VGPlayerViewController *player);
+/// Playlist mode: shows previous and next buttons, shuffle and repeat. `onSkip` gets -1 (back) or +1 (next).
+@property (nonatomic) BOOL playlistMode;
+@property (nonatomic, copy, nullable) void (^onSkip)(VGPlayerViewController *player, NSInteger direction);
+/// Playlist mode: hide the picture and show the VidGrab banner (the sound keeps playing).
+@property (nonatomic) BOOL videoOff;
+@property (nonatomic) BOOL shuffleOn;
+@property (nonatomic) NSInteger repeatMode;   // 0 off, 1 all, 2 one
+/// Called when the viewer taps shuffle or repeat.
+@property (nonatomic, copy, nullable) void (^onModeChange)(BOOL shuffle, NSInteger repeat);
+@property (nonatomic, copy, nullable) NSString *positionText;   // for example "3 of 12"
+/// Plays another stream inside this same player, with no closing or reopening.
+- (void)swapToStreamItem:(AVPlayerItem *)item video:(VGVideo *)video audio:(BOOL)audio master:(BOOL)master variants:(nullable NSDictionary *)variants position:(NSString *)position;
+/// Starts the current track again from the beginning (repeat one).
+- (void)restartTrack;
+/// Shows the paused end state (the playlist is over).
+- (void)showFinished;
+/// Seconds into the current track.
+- (double)currentSeconds;
+/// A short message over the picture.
+- (void)showMessage:(NSString *)text;
 - (void)start;
 @end
 

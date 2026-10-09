@@ -139,4 +139,17 @@ static void progress_cb(void *ctx, double f) {
     } completion:completion];
 }
 
+
+- (void)wavFrom:(NSString *)input to:(NSString *)output progress:(void (^)(double))progress completion:(void (^)(NSString *))completion {
+    self.progressBlock = progress;
+    void *ctx = (__bridge void *)self;
+    const char *in = strdup(input.fileSystemRepresentation), *out = strdup(output.fileSystemRepresentation);
+    [self run:^int(char *err, size_t n) {
+        int r = vg_audio_wav(in, out, progress_cb, cancel_cb, ctx, err, n);
+        free((void *)in); free((void *)out);
+        return r;
+    } completion:completion];
+}
+
+
 @end

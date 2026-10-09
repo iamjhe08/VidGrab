@@ -82,17 +82,37 @@ def daemon_plist(prefix):
     }
 
 
+def slim(app):
+    """Fewer files for the package manager: keep only the compiled .pyc of each Python file (next to
+    where the .py was) and drop the .py sources and __pycache__ folders. Halves the file count, which
+    is what makes some converters (roothide, rootless) crawl."""
+    removed = 0
+    for r, ds, fs in os.walk(app):
+        if '__pycache__' in ds:
+            cache = os.path.join(r, '__pycache__')
+            for n in os.listdir(cache):
+                if n.endswith('.cpython-314.pyc') and os.path.exists(os.path.join(r, n.split('.')[0] + '.py')):
+                    shutil.move(os.path.join(cache, n), os.path.join(r, n.split('.cpython-314.pyc')[0] + '.pyc'))
+                    os.remove(os.path.join(r, n.split('.cpython-314.pyc')[0] + '.py'))
+                    removed += 1
+            shutil.rmtree(cache)
+            ds.remove('__pycache__')
+    return removed
+
+
 def main():
     out_dir = sys.argv[1] if len(sys.argv) > 1 else HERE
     with open(os.path.join(APP, 'Info.plist'), 'rb') as f:
         version = plistlib.load(f)['CFBundleShortVersionString']
-    size_kb = sum(os.path.getsize(os.path.join(r, n)) for r, _, fs in os.walk(APP) for n in fs) // 1024
+    size_kb = 0   # filled per package below
 
     for scheme, (arch, prefix) in SCHEMES.items():
         root = tempfile.mkdtemp()
         os.chmod(root, 0o755)
         dest = os.path.join(root, prefix.lstrip('/'), 'Applications', 'VidGrab.app')
         shutil.copytree(APP, dest, symlinks=True)
+        if os.environ.get('VG_SLIM') == '1':
+            print('slimmed', slim(dest), 'python files')
         # Everything must be readable by the phone's normal user (the app doesn't run as root).
         for r, ds, fs in os.walk(dest):
             for n in ds + fs:
@@ -111,6 +131,7 @@ def main():
             plistlib.dump(daemon_plist(prefix), f)
         os.chmod(os.path.join(ld, DAEMON + '.plist'), 0o644)
 
+        size_kb = sum(os.path.getsize(os.path.join(r, n)) for r, _, fs in os.walk(root) for n in fs) // 1024
         debian = os.path.join(root, 'DEBIAN')
         os.makedirs(debian)
         with open(os.path.join(debian, 'control'), 'w') as f:

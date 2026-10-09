@@ -111,6 +111,14 @@ def main():
     shutil.copy2(os.path.join(hud_src, '.theos', 'obj', 'VidGrabHUD'), hud)
     os.chmod(hud, 0o755)
     run(LDID, '-S' + os.path.join(hud_src, 'entitlements.plist'), hud)
+    # Share > VidGrab (share sheet extension). Built from share/.
+    share_src = os.path.join(HERE, 'share')
+    run('make', '-C', share_src, 'FINALPACKAGE=1')
+    plug = os.path.join(APP, 'PlugIns')
+    os.makedirs(plug, exist_ok=True)
+    appex = os.path.join(plug, 'VGShare.appex')
+    shutil.copytree(os.path.join(share_src, '.theos', 'obj', 'VGShare.appex'), appex)
+    run(LDID, '-S', os.path.join(appex, 'VGShare'))
     # The app keeps no special permissions: on TrollStore, unsandboxing it turns the browser black,
     # and iOS won't let a sandboxed app start the bubble helper. The bubble over other apps is
     # for jailbreak installs, where the jailbreak starts it as a background service.

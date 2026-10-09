@@ -33,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *name;
 /// "RRGGBB"
 @property (nonatomic, copy) NSString *colorHex;
+/// YES for a folder inside the Private Vault (hidden with the rest of the vault).
+@property (nonatomic) BOOL vault;
 @property (nonatomic, strong) NSDate *date;
 @property (nonatomic, readonly) UIColor *color;
 + (NSString *)hexFromColor:(UIColor *)color;
@@ -53,13 +55,20 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL vault;
 /// The identifier of the folder this video was sorted into, nil when it sits loose in Downloads.
 @property (nonatomic, copy, nullable) NSString *folderID;
+@property (nonatomic) BOOL favorite;
+/// Audio details (shown in the Library and the player; also written into MP3 and M4A files).
+@property (nonatomic, copy, nullable) NSString *artist;
+@property (nonatomic, copy, nullable) NSString *album;
+/// File name (inside VidGrab's library folder) of a cover picture picked or found for this audio.
+@property (nonatomic, copy, nullable) NSString *artworkName;
+@property (nonatomic, readonly, nullable) NSString *artworkPath;
 @property (nonatomic, readonly) NSURL *fileURL;
 @property (nonatomic, readonly, nullable) UIImage *thumbnailImage;
 @end
 
 typedef void (^VGProgress)(double fraction, NSString *stage, NSString *detail);
 
-typedef NS_ENUM(NSInteger, VGTaskState) { VGTaskQueued, VGTaskRunning, VGTaskFailed, VGTaskDone, VGTaskCancelled };
+typedef NS_ENUM(NSInteger, VGTaskState) { VGTaskQueued, VGTaskRunning, VGTaskFailed, VGTaskDone, VGTaskCancelled, VGTaskPaused };
 
 /// One download in the queue.
 @interface VGTask : NSObject
@@ -96,6 +105,8 @@ extern NSString *const VGTaskFinishedNotification;
 /// The first running download, for compact progress displays.
 @property (nonatomic, readonly, nullable) VGTask *leadTask;
 
+- (void)pauseTask:(VGTask *)task;
+- (void)resumeTask:(VGTask *)task;
 - (void)start;
 - (void)fetch:(NSString *)url completion:(void (^)(VGVideo *_Nullable video, NSString *_Nullable error))completion;
 /// Same, for a stream link the browser caught: `extra` carries "headers", "kind" (hls, dash or file), "title" and "page".
@@ -118,8 +129,11 @@ extern NSString *const VGTaskFinishedNotification;
 /// Does its work on the calling thread, so call it off the main queue. The completion runs on the main queue.
 - (void)importFileAtURL:(NSURL *)url title:(nullable NSString *)title source:(NSString *)source move:(BOOL)move
              completion:(void (^)(VGItem *_Nullable item, NSString *_Nullable error))completion;
-/// Folders, newest last.
+/// Folders in Downloads, newest last.
 @property (nonatomic, readonly) NSArray<VGFolder *> *folders;
+/// Folders inside the Private Vault.
+@property (nonatomic, readonly) NSArray<VGFolder *> *vaultFolders;
+- (VGFolder *)createFolderNamed:(NSString *)name colorHex:(NSString *)hex vault:(BOOL)vault;
 - (nullable VGFolder *)folderWithID:(nullable NSString *)identifier;
 - (VGFolder *)createFolderNamed:(NSString *)name colorHex:(NSString *)hex;
 - (void)updateFolder:(VGFolder *)folder name:(NSString *)name colorHex:(NSString *)hex;
@@ -128,6 +142,19 @@ extern NSString *const VGTaskFinishedNotification;
 /// Puts videos in a folder, or back in the main list when `folder` is nil. Videos in the Private Vault are skipped.
 - (void)setItems:(NSArray<VGItem *> *)items folder:(nullable VGFolder *)folder;
 - (NSArray<VGItem *> *)itemsInFolder:(VGFolder *)folder;
+/// Favorites (the heart in the Library).
+- (void)setFavorite:(BOOL)favorite forItem:(VGItem *)item;
+/// Changes the title, artist, album and cover of an audio file. `artwork` is JPEG data (nil keeps the current cover);
+/// `clearArtwork` removes the cover. Tags are also written into MP3 and M4A files. Completion on the main queue.
+- (void)updateItem:(VGItem *)item title:(nullable NSString *)title artist:(nullable NSString *)artist album:(nullable NSString *)album
+           artwork:(nullable NSData *)artwork clearArtwork:(BOOL)clearArtwork completion:(nullable void (^)(NSString *_Nullable error))completion;
+/// Makes a copy of an audio file in another format: @"mp3", @"m4a", @"wav" or @"flac". The original stays.
+- (void)convertAudioItem:(VGItem *)item toFormat:(NSString *)format progress:(nullable void (^)(double))progress
+              completion:(void (^)(VGItem *_Nullable newItem, NSString *_Nullable error))completion;
+/// YES when the file's sound is stored losslessly (FLAC, ALAC, WAV...), so FLAC output is honest.
++ (BOOL)itemIsLossless:(VGItem *)item;
+/// Copies a file (for example out of the Private Vault) into Downloads. The original stays where it is.
+- (void)copyItemToDownloads:(VGItem *)item completion:(void (^)(NSString *_Nullable error))completion;
 /// Moves a download into or out of the Private Vault.
 - (void)setItem:(VGItem *)item inVault:(BOOL)vault;
 /// A queue-ready option for playlist downloads: the engine picks each video's own best match.

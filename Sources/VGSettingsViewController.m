@@ -10,12 +10,13 @@
 #import "VGOverlay.h"
 #import "VGPlayerGestures.h"
 #import "VGSubtitles.h"
+#import "VGCoverSearch.h"
 #import "VGSettingsBackup.h"
 #import "VGCreditsViewController.h"
 #import <AVFoundation/AVFoundation.h>
 
 // The order the sections are shown in: downloading, playing, privacy, then housekeeping, and About last.
-typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
+typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
 
 @interface VGSettingsViewController ()
 @property (nonatomic, copy) NSString *cacheSize;
@@ -44,7 +45,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
     // Explanations stay hidden until the exclamation button is pressed. The one exception: on phones
     // without a jailbreak, Floating progress is greyed out, and the note says why.
     self.openNotes = [NSMutableIndexSet indexSet];
-    if (!VGOverlay.bubbleAllowed) [self.openNotes addIndex:VGSectionFloat];
+    if (!VGOverlay.bubbleAllowed && !VGOverlay.canInstallHelper) [self.openNotes addIndex:VGSectionFloat];
     self.cacheSize = @"…";
     [self refreshSize];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(subtitleModelChanged) name:VGSubtitleModelDidChange object:nil];
@@ -116,6 +117,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         case VGSectionFloat: return 4;
         case VGSectionGestures: return 5;
         case VGSectionSubtitles: return 3;
+        case VGSectionAudio: return 1;
         case VGSectionBackup: return 2;
         case VGSectionVault: return [VGVaultLock usesPasscode] ? 2 : 1;
         default: return 4;   // About: version, GitHub, check for updates, credits
@@ -123,7 +125,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
 }
 
 - (NSString *)sectionTitle:(NSInteger)section {
-    return @[@"Download engine", @"Floating progress", @"Video player", @"Auto subtitles", @"Private Vault", @"Storage", @"Backup", @"About"][section];
+    return @[@"Download engine", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
 }
 
 // A small exclamation button in front of the section title; it opens and closes the section's note.
@@ -184,12 +186,14 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         NSString *bubble = @"With Bubble outside the app on, the download bubble stays on screen when you leave VidGrab or use other apps. It fades after 3 seconds so it won't get in the way; touch it to bring it back. Drag it anywhere, tap it to return to your downloads.";
         NSString *sound = @"Sound when done plays VidGrab's own sound when your downloads finish while you're outside the app. It never plays inside VidGrab.";
         if (VGOverlay.bubbleAllowed) return [NSString stringWithFormat:@"%@\n\n%@", bubble, sound];
-        return @"Floating progress is for jailbroken phones: install VidGrab as a jailbreak package to use it. The bubble inside VidGrab, background downloads and the finish notification still work here.";
+        return @"Floating progress works when VidGrab is installed as a jailbreak package, or with the TrollStore .tipa file. On TrollStore, tap Install bubble helper once and choose TrollStore. The bubble inside VidGrab, background downloads and the finish notification still work here.";
     }
     if (section == VGSectionGestures)
         return @"In the video player, swipe up or down on one half of the screen to change brightness and on the other half to change volume. Brightness/Volume gesture turns both on or off and Brightness side picks which half does what; they work when the phone is sideways. Swipe to seek jumps forward or back as you swipe sideways, in either direction of the phone, and the video follows your finger frame by frame. Seek distance is how far one swipe across the whole screen jumps. Progress line shows a thin bar along the bottom edge while the buttons are hidden. Brightness goes back to normal when you close the player. Swipes that start on the player's own buttons still work as usual.";
     if (section == VGSectionSubtitles)
         return @"Auto subtitles listen to the video on your phone and write what is said in English, whatever the language. Nothing is uploaded and no account is needed. The speech model downloads once, only when you turn this on. It uses extra battery and warms the phone while it works, and older phones can fall behind the video, so Fast is the safe choice. Accuracy drops with music, background noise and rare languages. In the player, turn it on from the CC button.";
+    if (section == VGSectionAudio)
+        return @"With Find cover art online on, VidGrab looks up each new audio download (MP3, M4A, WAV, FLAC) on the internet and uses its album picture, and fills in a missing artist and album. If nothing matches, the picture from the video is kept. You can also search by hand: Library > hold an audio file > Edit audio info > Find cover art online. Only the song name and artist are sent for the search.";
     if (section == VGSectionBackup)
         return @"Save your settings to a file, then load it after reinstalling or on another phone. It includes your switches, ad blocker sites and browser favorites. Your downloads, vault passcode and website sign-ins are never included.";
     if (section == VGSectionVault)
@@ -277,8 +281,10 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         // Bubble rows: jailbreak packages only. Sound rows: TrollStore or jailbreak. Otherwise greyed out.
         BOOL bubbleRow = ip.row == 0 || ip.row == 3;
         BOOL allowed = bubbleRow ? VGOverlay.bubbleAllowed : VGOverlay.fullInstall;
+        BOOL install = ip.row == 3 && VGOverlay.canInstallHelper;
+        if (install) allowed = YES;
         if (ip.row >= 2) {
-            UITableViewCell *c = [self cellWithTitle:ip.row == 2 ? @"Test sound" : @"Test bubble" value:nil
+            UITableViewCell *c = [self cellWithTitle:ip.row == 2 ? @"Test sound" : (install ? @"Install bubble helper" : @"Test bubble") value:nil
                                                 icon:ip.row == 2 ? @"speaker.wave.3" : @"play.circle" tint:allowed ? VGAccent : VGTertiary];
             if (!allowed) c.selectionStyle = UITableViewCellSelectionStyleNone;
             return c;
@@ -323,6 +329,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         sw.on = ip.row == 0 ? VGPlayerGestures.levelsEnabled : VGPlayerGestures.seekEnabled;
         sw.onTintColor = VGAccent;
         [sw addTarget:self action:@selector(gestureChanged:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+        return c;
+    }
+    if (ip.section == VGSectionAudio) {
+        UITableViewCell *c = [self cellWithTitle:@"Find cover art online" value:nil icon:@"photo.on.rectangle" tint:nil];
+        UISwitch *sw = [UISwitch new];
+        sw.on = VGCoverSearch.autoEnabled;
+        sw.onTintColor = VGAccent;
+        [sw addTarget:self action:@selector(autoCoverChanged:) forControlEvents:UIControlEventValueChanged];
         c.accessoryView = sw;
         c.selectionStyle = UITableViewCellSelectionStyleNone;
         return c;
@@ -391,6 +407,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
     NSInteger row = [self originalRow:ip];
     if (ip.section == VGSectionStorage && row == 1) [self clearCache];
     else if (ip.section == VGSectionEngine && row == 1) [self updateEngine];
+    else if (ip.section == VGSectionFloat && row == 3 && VGOverlay.canInstallHelper) [VGOverlay installHelperFrom:self];
     else if (ip.section == VGSectionFloat && row == 3 && !VGOverlay.bubbleAllowed) return;   // greyed out
     else if (ip.section == VGSectionFloat && row == 2 && !VGOverlay.fullInstall) return;
     else if (ip.section == VGSectionFloat && row == 3) [self testBubble];
@@ -483,6 +500,8 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionFloat, VGSecti
         [VGActions alert:@"Couldn't download the speech model" message:err from:self.presentedViewController ?: self];
     }
 }
+
+- (void)autoCoverChanged:(UISwitch *)sw { VGCoverSearch.autoEnabled = sw.on; }
 
 - (void)subtitlesChanged:(UISwitch *)sw {
     [[UISelectionFeedbackGenerator new] selectionChanged];
