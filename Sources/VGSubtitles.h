@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,6 +18,17 @@ typedef NS_ENUM(NSInteger, VGSubtitleQuality) { VGSubtitleFast, VGSubtitleBalanc
 @property (class, nonatomic) VGSubtitleQuality quality;
 /// Whether subtitles were left on in the last video (so the next one starts the same way).
 @property (class, nonatomic) BOOL startOn;
+
+/// How the lines look on the picture (Settings > Auto English subtitles).
+@property (class, nonatomic) NSInteger textSize;        // 0 small, 1 medium (default), 2 large, 3 extra large
+@property (class, nonatomic) NSInteger textColor;       // 0 white (default), 1 yellow, 2 cyan, 3 green
+@property (class, nonatomic) NSInteger backgroundStyle; // 0 dark (default), 1 solid black, 2 none, 3 light
++ (NSArray<NSString *> *)sizeNames;
++ (NSArray<NSString *> *)colorNames;
++ (NSArray<NSString *> *)backgroundNames;
++ (CGFloat)fontSize;
++ (UIColor *)lineColor;
++ (UIColor *)boxColor;
 
 + (NSString *)nameFor:(VGSubtitleQuality)quality;          // "Balanced"
 + (NSString *)detailFor:(VGSubtitleQuality)quality;        // "About 60 MB. Good mix of speed and accuracy."
@@ -45,6 +57,10 @@ typedef NS_ENUM(NSInteger, VGSubtitleQuality) { VGSubtitleFast, VGSubtitleBalanc
 @property (nonatomic, copy, nullable) void (^onChange)(void);
 
 - (instancetype)initWithURL:(NSURL *)url key:(NSString *)key quality:(VGSubtitleQuality)quality;
+/// For a video that plays from the internet: listens through the stream\'s own sound track. No lines are saved for later.
+- (instancetype)initWithAsset:(AVAsset *)asset quality:(VGSubtitleQuality)quality;
+/// Set when the sound could not be read (some live-style streams); the player says so.
+@property (nonatomic, copy) void (^onUnreadable)(void);
 - (void)start;
 - (void)stop;
 /// Where the video is now, in seconds. Work always stays a little ahead of this.

@@ -18,6 +18,10 @@ static NSInteger HeightOf(VGOption *o) {
 + (void)setThreads:(NSInteger)n { [NSUserDefaults.standardUserDefaults setInteger:n forKey:@"vgThreads"]; }
 + (BOOL)filesOnly { return [NSUserDefaults.standardUserDefaults boolForKey:@"vgFilesOnly"]; }
 + (void)setFilesOnly:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgFilesOnly"]; }
++ (BOOL)wifiOnly { return [NSUserDefaults.standardUserDefaults boolForKey:@"vgWifiOnly"]; }
++ (void)setWifiOnly:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgWifiOnly"]; }
++ (BOOL)askDeleteWatched { return [NSUserDefaults.standardUserDefaults boolForKey:@"vgAskDeleteWatched"]; }
++ (void)setAskDeleteWatched:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgAskDeleteWatched"]; }
 + (NSArray<NSNumber *> *)threadChoices { return @[@1, @2, @3, @4, @5, @6, @7, @8, @9, @10]; }
 
 + (NSString *)extraWithThreads:(NSString *)extra {

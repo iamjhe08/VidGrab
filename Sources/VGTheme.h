@@ -11,6 +11,10 @@ static inline UIColor *VGHex(unsigned int h) {
 @property (nonatomic, readonly) NSString *title, *detail;
 /// Futuristic glass look: see-through bars with a blur.
 @property (nonatomic, readonly) BOOL glass;
+/// A light theme (white background, dark text).
+@property (nonatomic, readonly) BOOL light;
+/// The video player always stays dark; these are its glass, edge and background colors.
+@property (nonatomic, readonly) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 + (VGPalette *)current;
 + (NSArray<VGPalette *> *)all;
 /// Index of the saved theme (0 = Default).
@@ -32,6 +36,12 @@ extern NSString *const VGThemeDidChangeNotification;
 #define VGTabBarBg    ([VGPalette current].tabBar)
 #define VGListBg      ([VGPalette current].listBackground)
 #define VGSelectedBg  ([VGPalette current].selectedCell)
+#define VGLight       ([VGPalette current].light)
+#define VGPlayerBG        ([VGPalette current].playerBackground)
+#define VGPlayerSurface   ([VGPalette current].playerSurface)
+#define VGPlayerStroke    ([VGPalette current].playerStroke)
+#define VGPlayerSecondary ([VGPalette current].playerSecondary)
+#define VGInterfaceStyle  (VGPalette.current.light ? UIUserInterfaceStyleLight : UIUserInterfaceStyleDark)
 #define VGEditBg      ([VGPalette current].editButton)
 
 static inline UIFont *VGFont(CGFloat size, UIFontWeight weight) {

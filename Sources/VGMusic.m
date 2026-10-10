@@ -1,6 +1,7 @@
 #import "VGLyrics.h"
 #import "VGMusic.h"
 #import "VGTheme.h"
+#import "VGHaptics.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
 
@@ -91,6 +92,23 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
     BOOL _remoteSet;
     int _failures;
     BOOL _wantPlay;
+    id _fadeObs;                 // checks about ten times a second whether the next song should start fading in
+    AVPlayer *_xPlayer;          // the next song while it fades in over the end of this one
+    NSInteger _xPos;
+    BOOL _fading;
+    BOOL _fadeSkip;              // the next file could not be opened for a fade: let the normal change handle this song
+    NSTimer *_xTimer;
+    NSDate *_sleepAt;
+    BOOL _sleepEndOfSong;
+}
+
++ (NSInteger)crossfade { return [NSUserDefaults.standardUserDefaults integerForKey:@"vgCrossfade"]; }
++ (void)setCrossfade:(NSInteger)c { [NSUserDefaults.standardUserDefaults setInteger:c forKey:@"vgCrossfade"]; }
++ (NSArray<NSNumber *> *)crossfadeChoices { return @[@0, @1, @2, @4, @6, @8, @12]; }
++ (NSString *)nameForCrossfade:(NSInteger)c {
+    if (c <= 0) return @"Off";
+    if (c == 1) return @"Gapless";
+    return [NSString stringWithFormat:@"%ld seconds", (long)c];
 }
 
 + (instancetype)shared {
@@ -154,17 +172,150 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
     _player = [AVPlayer new];
     _player.automaticallyWaitsToMinimizeStalling = YES;
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(interrupted:) name:AVAudioSessionInterruptionNotification object:nil];
+    [self attachTimeObservers];
+}
+
+- (void)attachTimeObservers {
     __weak typeof(self) ws = self;
     _timeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, 600) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
         [NSNotificationCenter.defaultCenter postNotificationName:VGMusicTickNotification object:nil];
-        (void)ws;
+        [ws sleepTick];
     }];
+    _fadeObs = [_player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.1, 600) queue:dispatch_get_main_queue() usingBlock:^(CMTime t) {
+        [ws fadeTick];
+    }];
+}
+
+- (void)detachTimeObservers {
+    if (_timeObs) { [_player removeTimeObserver:_timeObs]; _timeObs = nil; }
+    if (_fadeObs) { [_player removeTimeObserver:_fadeObs]; _fadeObs = nil; }
+}
+
+#pragma mark Sleep timer
+
+- (BOOL)sleepActive { return _sleepAt != nil || _sleepEndOfSong; }
+- (BOOL)sleepAtEndOfSong { return _sleepEndOfSong; }
+- (NSTimeInterval)sleepRemaining { return _sleepAt ? MAX(0, _sleepAt.timeIntervalSinceNow) : 0; }
+
+- (void)setSleepMinutes:(NSInteger)minutes {
+    _sleepEndOfSong = NO;
+    _sleepAt = minutes > 0 ? [NSDate dateWithTimeIntervalSinceNow:minutes * 60.0] : nil;
+    [self changed];
+}
+
+- (void)setSleepAtEndOfSong {
+    _sleepAt = nil;
+    _sleepEndOfSong = YES;
+    [self cancelFade];
+    [self changed];
+}
+
+- (void)sleepTick {
+    if (!_sleepAt || _sleepAt.timeIntervalSinceNow > 0) return;
+    _sleepAt = nil;
+    AVPlayer *p = _player;
+    [self changed];
+    __block int step = 0;   // fade the sound out over about 1.5 seconds, then stop
+    [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+        step++;
+        p.volume = (float)MAX(0, 1 - step / 15.0);
+        if (step >= 15) { [t invalidate]; [self pause]; p.volume = 1; }
+    }];
+}
+
+#pragma mark Smooth changes between songs
+
+- (double)overlapSeconds {
+    NSInteger c = VGMusicPlayer.crossfade;
+    return c <= 0 ? 0 : (c == 1 ? 0.6 : (double)c);
+}
+
+/// The position the list moves to by itself, or -1 when it stops (or when the change must not overlap).
+- (NSInteger)autoNextPos {
+    if (!_order.count || _repeatMode == 2) return -1;
+    if ((NSUInteger)_pos + 1 < _order.count) return _pos + 1;
+    if (_repeatMode == 1 && !_shuffle) return 0;
+    return -1;
+}
+
+- (void)fadeTick {
+    if (_fading || _fadeSkip || !_wantPlay || _sleepEndOfSong || !self.playing) return;
+    double ov = [self overlapSeconds];
+    if (ov <= 0) return;
+    double d = CMTimeGetSeconds(_player.currentItem.duration), t = CMTimeGetSeconds(_player.currentTime);
+    if (!isfinite(d) || !isfinite(t) || d < ov * 3 + 1) return;
+    double left = d - t;
+    if (left > ov + 0.05 || left < 0.05) return;
+    NSInteger np = [self autoNextPos];
+    if (np < 0) return;
+    [self beginFadeTo:np length:left];
+}
+
+- (void)beginFadeTo:(NSInteger)np length:(double)len {
+    VGItem *it = _queue[_order[(NSUInteger)np].unsignedIntegerValue];
+    AVPlayerItem *pi = [AVPlayerItem playerItemWithURL:it.fileURL];
+    AVPlayer *x = [AVPlayer new];
+    x.automaticallyWaitsToMinimizeStalling = NO;
+    x.volume = 0;
+    [x replaceCurrentItemWithPlayerItem:pi];
+    _xPlayer = x; _xPos = np; _fading = YES;
+    // This song's own "finished" signal must not move the list on a second time.
+    [NSNotificationCenter.defaultCenter removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+    [NSNotificationCenter.defaultCenter removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:nil];
+    [x play];
+    CFTimeInterval start = CACurrentMediaTime();
+    __weak typeof(self) ws = self;
+    _xTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *t) {
+        VGMusicPlayer *me = ws;
+        if (!me) { [t invalidate]; return; }
+        if (pi.status == AVPlayerItemStatusFailed) { me->_fadeSkip = YES; [me cancelFade]; return; }   // the next file can't be opened: let the normal change handle it
+        double f = MIN(1.0, (CACurrentMediaTime() - start) / MAX(0.2, len));
+        me->_player.volume = (float)cos(f * M_PI_2);
+        x.volume = (float)sin(f * M_PI_2);
+        if (f >= 1.0) [me completeFade];
+    }];
+}
+
+- (void)completeFade {
+    [_xTimer invalidate]; _xTimer = nil;
+    AVPlayer *old = _player;
+    [self detachTimeObservers];
+    [old pause];
+    [old replaceCurrentItemWithPlayerItem:nil];
+    old.volume = 1;
+    _player = _xPlayer; _xPlayer = nil;
+    _player.volume = 1;
+    [self attachTimeObservers];
+    _pos = _xPos; _fading = NO; _fadeSkip = NO; _failures = 0;
+    AVPlayerItem *pi = _player.currentItem;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(trackEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:pi];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(trackFailed:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:pi];
+    [self setUpRemote];
+    [self changed];
+}
+
+/// Drops a fade that is under way (skip, seek, pause, stop...) and puts this song back to normal.
+- (void)cancelFade {
+    if (!_fading) return;
+    [_xTimer invalidate]; _xTimer = nil;
+    [_xPlayer pause];
+    [_xPlayer replaceCurrentItemWithPlayerItem:nil];
+    _xPlayer = nil; _fading = NO;
+    _player.volume = 1;
+    AVPlayerItem *pi = _player.currentItem;
+    if (pi) {
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(trackEnded:) name:AVPlayerItemDidPlayToEndTimeNotification object:pi];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(trackFailed:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:pi];
+    }
 }
 
 - (void)loadCurrentAndPlay:(BOOL)play {
     VGItem *it = self.current;
     if (!it) return;
     [self setUpPlayer];
+    [self cancelFade];
+    _fadeSkip = NO;
+    _player.volume = 1;
     [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:0 error:nil];
     [AVAudioSession.sharedInstance setActive:YES error:nil];
     [NSNotificationCenter.defaultCenter removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
@@ -192,6 +343,12 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 
 - (void)trackEnded:(NSNotification *)n {
     _failures = 0;
+    if (_sleepEndOfSong) {   // sleep timer set to "end of this song"
+        _sleepEndOfSong = NO; _wantPlay = NO;
+        [_player pause]; [_player seekToTime:kCMTimeZero];
+        [self changed];
+        return;
+    }
     if (_repeatMode == 2) { [self seekTo:0]; [_player play]; [self changed]; return; }
     [self advanceAutomatically:YES];
 }
@@ -228,9 +385,10 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 
 - (void)togglePlay {
     if (!_player || !self.current) return;
-    if (self.playing) { _wantPlay = NO; [_player pause]; }
+    if (self.playing) { _wantPlay = NO; [self cancelFade]; [_player pause]; }
     else {
         _wantPlay = YES;
+        if (_sleepAt && _sleepAt.timeIntervalSinceNow <= 0) _sleepAt = nil;   // an old timer must not stop the music right away
         if (self.duration > 0 && self.position >= self.duration - 0.3) [self seekTo:0];
         [AVAudioSession.sharedInstance setActive:YES error:nil];
         [_player play];
@@ -238,7 +396,7 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
     [self changed];
 }
 
-- (void)pause { _wantPlay = NO; if (self.playing) { [_player pause]; [self changed]; } }
+- (void)pause { _wantPlay = NO; [self cancelFade]; if (self.playing) { [_player pause]; [self changed]; } }
 
 /// A call, an alarm or another app's sound stops us; when it is over, carry on if we were playing.
 - (void)interrupted:(NSNotification *)n {
@@ -253,6 +411,7 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 }
 
 - (void)seekTo:(double)seconds {
+    [self cancelFade];
     [_player seekToTime:CMTimeMakeWithSeconds(MAX(0, seconds), 600) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero completionHandler:^(BOOL f) { [self updateNowPlaying]; }];
 }
 
@@ -267,6 +426,8 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 
 - (void)stop {
     _wantPlay = NO;
+    [self cancelFade];
+    _sleepAt = nil; _sleepEndOfSong = NO;
     [_player pause];
     [_player replaceCurrentItemWithPlayerItem:nil];
     [NSNotificationCenter.defaultCenter removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
@@ -292,6 +453,7 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
     [cc.changePlaybackPositionCommand addTarget:self action:@selector(remoteSeek:)];
     (void)ws;
 }
+
 - (MPRemoteCommandHandlerStatus)remotePlay { if (VGPlayerIsActive()) return MPRemoteCommandHandlerStatusCommandFailed; if (!self.playing) [self togglePlay]; return MPRemoteCommandHandlerStatusSuccess; }
 - (MPRemoteCommandHandlerStatus)remotePause { if (VGPlayerIsActive()) return MPRemoteCommandHandlerStatusCommandFailed; [self pause]; return MPRemoteCommandHandlerStatusSuccess; }
 - (MPRemoteCommandHandlerStatus)remoteToggle { if (VGPlayerIsActive()) return MPRemoteCommandHandlerStatusCommandFailed; [self togglePlay]; return MPRemoteCommandHandlerStatusSuccess; }
@@ -337,6 +499,7 @@ static UIButton *IconButton(NSString *symbol, CGFloat size, SEL action, id targe
     c.baseForegroundColor = VGText;
     b.configuration = c;
     [b addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+    [b addAction:[UIAction actionWithHandler:^(UIAction *a) { [VGHaptics tap]; }] forControlEvents:UIControlEventTouchUpInside];
     return b;
 }
 
@@ -533,7 +696,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 @property (nonatomic, strong) VGLyrics *lyrics;
 @property (nonatomic, strong) UIImageView *art;
 @property (nonatomic, strong) UILabel *titleLabel, *subLabel, *elapsed, *remaining;
-@property (nonatomic, strong) UIButton *shuffleB, *prevB, *playB, *nextB, *repeatB, *minB, *stopB;
+@property (nonatomic, strong) UIButton *shuffleB, *prevB, *playB, *nextB, *repeatB, *minB, *stopB, *sleepB;
 @property (nonatomic, strong) UISlider *slider;
 @property (nonatomic) BOOL scrubbing;
 @end
@@ -555,12 +718,12 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     self.layer.cornerCurve = kCACornerCurveContinuous;
     self.clipsToBounds = YES;
     self.layer.borderWidth = 1;
-    self.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.14].CGColor;
+    self.layer.borderColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.14].CGColor;
     UIView *c = self.contentView;
     c.backgroundColor = UIColor.clearColor;
 
     _grab = [UIView new];
-    _grab.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35];
+    _grab.backgroundColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.35];
     _grab.layer.cornerRadius = 2.5;
     [c addSubview:_grab];
 
@@ -583,7 +746,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 
     self.slider = [UISlider new];
     self.slider.minimumTrackTintColor = VGAccent;
-    self.slider.maximumTrackTintColor = [UIColor colorWithWhite:1 alpha:0.22];
+    self.slider.maximumTrackTintColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.22];
     [self.slider setThumbImage:[[UIImage systemImageNamed:@"circle.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13]] imageWithTintColor:VGText renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
     [self.slider addTarget:self action:@selector(scrubBegan) forControlEvents:UIControlEventTouchDown];
     [self.slider addTarget:self action:@selector(scrubMoved) forControlEvents:UIControlEventValueChanged];
@@ -604,13 +767,32 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     self.minB = IconButton(@"chevron.down", 18, @selector(minTapped), self);
     self.stopB = IconButton(@"xmark.circle.fill", 24, @selector(stopTapped), self);
     SetSymbol(self.stopB, @"xmark.circle.fill", 24, VGSecondary);
+    self.sleepB = IconButton(@"moon.zzz", 18, @selector(sleepPlaceholder), self);
+    SetSymbol(self.sleepB, @"moon.zzz", 18, VGSecondary);
+    self.sleepB.accessibilityLabel = @"Sleep timer";
+    self.sleepB.showsMenuAsPrimaryAction = YES;
+    self.sleepB.menu = [UIMenu menuWithChildren:@[[UIDeferredMenuElement elementWithUncachedProvider:^(void (^done)(NSArray<UIMenuElement *> *)) {
+        VGMusicPlayer *pl = VGMusicPlayer.shared;
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSNumber *m in @[@15, @30, @45, @60]) {
+            [items addObject:[UIAction actionWithTitle:[NSString stringWithFormat:@"Stop after %@ minutes", m] image:nil identifier:nil handler:^(UIAction *a) { [pl setSleepMinutes:m.integerValue]; }]];
+        }
+        [items addObject:[UIAction actionWithTitle:@"Stop at the end of this song" image:nil identifier:nil handler:^(UIAction *a) { [pl setSleepAtEndOfSong]; }]];
+        if (pl.sleepActive) {
+            NSString *left = pl.sleepAtEndOfSong ? @"at the end of this song" : [NSString stringWithFormat:@"in %d min", (int)ceil(pl.sleepRemaining / 60.0)];
+            UIAction *off = [UIAction actionWithTitle:[NSString stringWithFormat:@"Turn off timer (stops %@)", left] image:nil identifier:nil handler:^(UIAction *a) { [pl setSleepMinutes:0]; }];
+            off.attributes = UIMenuElementAttributesDestructive;
+            [items addObject:off];
+        }
+        done(items);
+    }]]];
     SetSymbol(self.minB, @"chevron.down", 18, VGText);
     self.minB.accessibilityLabel = @"Minimize player";
     self.stopB.accessibilityLabel = @"Stop and close";
     for (UIButton *b in @[self.shuffleB, self.prevB, self.nextB, self.repeatB, self.minB, self.stopB]) {
         UIButtonConfiguration *cf = b.configuration; cf.contentInsets = NSDirectionalEdgeInsetsZero; b.configuration = cf;
     }
-    for (UIView *v in @[self.shuffleB, self.prevB, self.playB, self.nextB, self.repeatB, self.minB, self.stopB]) [c addSubview:v];
+    for (UIView *v in @[self.shuffleB, self.prevB, self.playB, self.nextB, self.repeatB, self.minB, self.stopB, self.sleepB]) [c addSubview:v];
 
     // Lyrics: swipe the cover to the left
     self.lyricsBox = [UIView new];
@@ -634,13 +816,13 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     self.searchB.alpha = 0; self.searchB.hidden = YES;
     [c addSubview:self.searchB];
     self.hintB = [UIButton buttonWithType:UIButtonTypeCustom];
-    [self.hintB setImage:[[UIImage systemImageNamed:@"chevron.compact.right" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightBold]] imageWithTintColor:[UIColor colorWithWhite:1 alpha:0.75] renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
+    [self.hintB setImage:[[UIImage systemImageNamed:@"chevron.compact.right" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightBold]] imageWithTintColor:[UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.75] renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
     [self.hintB addTarget:self action:@selector(swipedLeft) forControlEvents:UIControlEventTouchUpInside];
     self.hintB.accessibilityLabel = @"Show lyrics";
     [c addSubview:self.hintB];
     self.dots = [UIPageControl new];
     self.dots.numberOfPages = 2; self.dots.userInteractionEnabled = NO;
-    self.dots.pageIndicatorTintColor = [UIColor colorWithWhite:1 alpha:0.3]; self.dots.currentPageIndicatorTintColor = VGText;
+    self.dots.pageIndicatorTintColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.3]; self.dots.currentPageIndicatorTintColor = VGText;
     [c addSubview:self.dots];
     self.artShadow.userInteractionEnabled = YES;
     UISwipeGestureRecognizer *sl = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(swipedLeft)];
@@ -670,7 +852,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 - (void)applyBlur {
     if (_blur) { [_blur stopAnimation:YES]; _blur = nil; self.effect = nil; }
     UIViewPropertyAnimator *a = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
-        self.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+        self.effect = [UIBlurEffect effectWithStyle:VGLight ? UIBlurEffectStyleExtraLight : UIBlurEffectStyleDark];
     }];
     a.pausesOnCompletion = YES;
     a.fractionComplete = 0.30;
@@ -696,6 +878,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     _grab.frame = CGRectMake(W / 2 - 19, 8, 38, 5);
     self.minB.frame = CGRectMake(10, 14, 44, 44);
     self.stopB.frame = CGRectMake(W - 54, 14, 44, 44);
+    self.sleepB.frame = CGRectMake(W / 2 - 22, 18, 44, 44);
 
     CGFloat top = 58, bottomPad = 22;
     CGFloat below = 14 + 26 + 2 + 20 + 14 + 30 + 16 + 64;    // everything under the cover
@@ -751,6 +934,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
         }
     }
 }
+- (void)sleepPlaceholder {}   // the button only opens its menu
 - (void)stopTapped { [VGMusicPlayer.shared stop]; }
 - (void)playTapped { [VGMusicPlayer.shared togglePlay]; }
 - (void)nextTapped { [VGMusicPlayer.shared next]; }
@@ -967,6 +1151,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     [self.playB setImage:[[UIImage systemImageNamed:pl ? @"pause.fill" : @"play.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightBold]] imageWithTintColor:VGBackground renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
     SetSymbol(self.shuffleB, @"shuffle", 19, p.shuffle ? VGAccent : VGSecondary);
     SetSymbol(self.repeatB, p.repeatMode == 2 ? @"repeat.1" : @"repeat", 19, p.repeatMode ? VGAccent : VGSecondary);
+    SetSymbol(self.sleepB, p.sleepActive ? @"moon.zzz.fill" : @"moon.zzz", 18, p.sleepActive ? VGAccent : VGSecondary);
     self.prevB.enabled = self.nextB.enabled = p.queue.count > 0;
     if (_lyricsOn) [self ensureLyrics];
     [self tick];

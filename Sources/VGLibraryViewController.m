@@ -5,6 +5,7 @@
 #import "VGDownloadDefaults.h"
 #import "VGActions.h"
 #import "VGTheme.h"
+#import "VGHaptics.h"
 #import "VGAudioEditorViewController.h"
 #import "VGFolderEditorViewController.h"
 
@@ -857,7 +858,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     if (item.audio) {
         [tools addObject:[UIAction actionWithTitle:@"Edit title, artist, album and cover" image:[UIImage systemImageNamed:@"pencil"] identifier:nil handler:^(UIAction *a) {
             UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[[VGAudioEditorViewController alloc] initWithItem:item]];
-            nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            nav.overrideUserInterfaceStyle = VGInterfaceStyle;
             [ws presentViewController:nav animated:YES completion:nil];
         }]];
         NSMutableArray *conv = [NSMutableArray array];

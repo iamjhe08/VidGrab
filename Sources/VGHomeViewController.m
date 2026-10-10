@@ -226,7 +226,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
-- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+- (UIStatusBarStyle)preferredStatusBarStyle { return VGLight ? UIStatusBarStyleDarkContent : UIStatusBarStyleLightContent; }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];

@@ -120,6 +120,38 @@ static void PostModelChange(void) {
 
 @implementation VGSubtitles
 
++ (NSInteger)styleValue:(NSString *)key max:(NSInteger)max fallback:(NSInteger)fb {
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:key];
+    NSInteger n = [v isKindOfClass:NSNumber.class] ? [v integerValue] : fb;
+    return n < 0 || n > max ? fb : n;
+}
++ (NSInteger)textSize { return [self styleValue:@"vgSubSize" max:3 fallback:1]; }
++ (void)setTextSize:(NSInteger)v { [NSUserDefaults.standardUserDefaults setInteger:v forKey:@"vgSubSize"]; }
++ (NSInteger)textColor { return [self styleValue:@"vgSubColor" max:3 fallback:0]; }
++ (void)setTextColor:(NSInteger)v { [NSUserDefaults.standardUserDefaults setInteger:v forKey:@"vgSubColor"]; }
++ (NSInteger)backgroundStyle { return [self styleValue:@"vgSubBack" max:3 fallback:0]; }
++ (void)setBackgroundStyle:(NSInteger)v { [NSUserDefaults.standardUserDefaults setInteger:v forKey:@"vgSubBack"]; }
++ (NSArray<NSString *> *)sizeNames { return @[@"Small", @"Medium", @"Large", @"Extra large"]; }
++ (NSArray<NSString *> *)colorNames { return @[@"White", @"Yellow", @"Cyan", @"Green"]; }
++ (NSArray<NSString *> *)backgroundNames { return @[@"Dark", @"Solid black", @"None", @"Light"]; }
++ (CGFloat)fontSize { return (CGFloat[]){15, 17, 20, 24}[self.textSize]; }
++ (UIColor *)lineColor {
+    switch (self.textColor) {
+        case 1: return [UIColor colorWithRed:1.0 green:0.89 blue:0.36 alpha:1];
+        case 2: return [UIColor colorWithRed:0.5 green:0.91 blue:1.0 alpha:1];
+        case 3: return [UIColor colorWithRed:0.55 green:1.0 blue:0.62 alpha:1];
+        default: return UIColor.whiteColor;
+    }
+}
++ (UIColor *)boxColor {
+    switch (self.backgroundStyle) {
+        case 1: return [UIColor colorWithWhite:0 alpha:0.92];
+        case 2: return UIColor.clearColor;
+        case 3: return [UIColor colorWithWhite:1 alpha:0.28];
+        default: return [UIColor colorWithWhite:0 alpha:0.64];
+    }
+}
+
 + (BOOL)enabled { return [NSUserDefaults.standardUserDefaults boolForKey:kEnabledKey]; }
 + (void)setEnabled:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:kEnabledKey]; }
 
@@ -168,6 +200,8 @@ static const double kAhead = 75;    // how far ahead of the playhead to stay
 
 @interface VGSubtitleEngine ()
 @property (nonatomic, copy) NSURL *url;
+@property (nonatomic, strong) AVAsset *streamAsset;
+@property (nonatomic) NSInteger readFails;
 @property (nonatomic, copy) NSString *key;
 @property (nonatomic) VGSubtitleQuality quality;
 @property (atomic) BOOL stopped;
@@ -203,6 +237,11 @@ static bool VGAbortCallback(void *user) {
     return self;
 }
 
+- (instancetype)initWithAsset:(AVAsset *)asset quality:(VGSubtitleQuality)quality {
+    if ((self = [self initWithURL:[NSURL URLWithString:@"about:blank"] key:@"" quality:quality])) { _streamAsset = asset; _key = nil; }
+    return self;
+}
+
 #pragma mark Saved lines
 
 - (NSString *)cachePath {
@@ -212,6 +251,7 @@ static bool VGAbortCallback(void *user) {
 }
 
 - (void)loadCache {
+    if (!self.key) return;
     NSData *d = [NSData dataWithContentsOfFile:[self cachePath]];
     NSDictionary *j = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     if (![j isKindOfClass:NSDictionary.class]) return;
@@ -220,6 +260,7 @@ static bool VGAbortCallback(void *user) {
 }
 
 - (void)saveCache {
+    if (!self.key) return;
     NSDictionary *j;
     @synchronized (self) {
         NSMutableArray *done = [NSMutableArray array];
@@ -355,6 +396,16 @@ static BOOL IsNoiseTag(NSString *t) {
     double length = self.duration > 0 ? MIN(kWindow, self.duration - start) : kWindow;
     NSData *pcm = length > 0.3 ? [self readAudio:asset from:start length:length] : nil;
     if (self.stopped) return;
+    if (self.streamAsset && length > 0.3 && !pcm.length) {   // the stream's sound could not be read
+        if (++self.readFails >= 3) {
+            self.stopped = YES;
+            [self setStatusText:@"Subtitles can't read this stream. Download it to get them."];
+            void (^cb)(void) = self.onUnreadable;
+            if (cb) dispatch_async(dispatch_get_main_queue(), cb);
+        } else [self waitFor:2.0];
+        return;
+    }
+    self.readFails = 0;
     NSUInteger n = pcm.length / sizeof(float);
     const float *samples = (const float *)pcm.bytes;
 
@@ -419,14 +470,14 @@ static BOOL IsNoiseTag(NSString *t) {
             PostModelChange();
             return;
         }
-        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:self.url options:nil];
+        AVAsset *asset = self.streamAsset ?: [AVURLAsset URLAssetWithURL:self.url options:nil];
         double d = CMTimeGetSeconds(asset.duration);
         self.duration = isfinite(d) && d > 0 ? d : 0;
 
         while (!self.stopped) {
             NSInteger k = [self nextWindow];
             if (k < 0) { [self setStatusText:nil]; [self waitFor:1.0]; continue; }
-            if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateSerious) {
+            if (NSProcessInfo.processInfo.thermalState >= NSProcessInfoThermalStateCritical) {   // only when iOS says the phone is truly overheating (Serious fires too early and showed the warning on a 36°C phone)
                 [self setStatusText:@"Subtitles paused while the phone cools down"];
                 [self waitFor:4.0];
                 continue;

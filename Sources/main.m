@@ -13,6 +13,16 @@
 #import "VGKeepAlive.h"
 #import "VGOverlay.h"
 #import "VGActions.h"
+#import "VGSidebarController.h"
+#import "VGHaptics.h"
+
+// The tab controller decides the status bar (clock, battery, Wi-Fi): dark icons on the white theme, light icons otherwise.
+@interface VGRootTabs : UITabBarController
+@end
+@implementation VGRootTabs
+- (UIViewController *)childViewControllerForStatusBarStyle { return nil; }
+- (UIStatusBarStyle)preferredStatusBarStyle { return VGLight ? UIStatusBarStyleDarkContent : UIStatusBarStyleLightContent; }
+@end
 
 @interface VGAppDelegate : UIResponder <UIApplicationDelegate, UITabBarControllerDelegate>
 @property (nonatomic, strong) UIWindow *window;
@@ -63,7 +73,7 @@
     UINavigationBar.appearance.tintColor = VGAccent;
 }
 
-- (void)buildTabs {
+- (NSArray<UIViewController *> *)buildNavs {
     self.home = [VGHomeViewController new];
     UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:self.home];
     homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:[UIImage systemImageNamed:@"house"]
@@ -83,25 +93,54 @@
     dlNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Downloads" image:[UIImage systemImageNamed:@"arrow.down.circle"]
                                              selectedImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
 
-    self.tabs = [UITabBarController new];
-    self.tabs.viewControllers = @[homeNav, browseNav, libNav, dlNav];
+    return @[homeNav, browseNav, libNav, dlNav];
+}
+
+- (void)buildTabs {
+    self.tabs = [VGRootTabs new];
+    self.tabs.viewControllers = [self buildNavs];
     self.tabs.tabBar.tintColor = VGText;
 }
 
-- (void)rebuildForTheme {
-    // The mini video player lives on top of the tab bar; to be safe, a theme picked while it is open applies next launch.
+// Puts the tabs on screen: inside the side list on iPad when that layout is on, otherwise on their own.
+- (void)installRoot:(BOOL)animated {
+    UIViewController *old = self.window.rootViewController;
+    if ([old isKindOfClass:VGSidebarController.class]) [(VGSidebarController *)old releaseTabs];
+    UIViewController *root = self.tabs;
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && VGSidebarController.layoutOn)
+        root = [[VGSidebarController alloc] initWithTabs:self.tabs];
+    if (animated) {
+        [UIView transitionWithView:self.window duration:0.25 options:UIViewAnimationOptionTransitionCrossDissolve
+                        animations:^{ self.window.rootViewController = root; } completion:nil];
+    } else self.window.rootViewController = root;
+}
+
+- (void)layoutChanged {
     extern BOOL VGPlayerIsActive(void);
     if (VGPlayerIsActive()) return;
-    NSInteger sel = self.tabs.selectedIndex;
     [self.pill removeFromSuperview];
+    [self installRoot:YES];
+    [self.tabs.view addSubview:self.pill];
+}
+
+// A new theme: the pages are rebuilt inside the same tab controller, so a playing video, the mini player and anything
+// open on screen keep going.
+- (void)rebuildForTheme {
+    NSInteger sel = self.tabs.selectedIndex;
     [self applyAppearance];
-    [self buildTabs];
-    self.tabs.selectedIndex = MIN(sel, (NSInteger)self.tabs.viewControllers.count - 1);
-    self.tabs.delegate = self;
     self.window.backgroundColor = VGBackground;
     self.window.tintColor = VGAccent;
-    [UIView transitionWithView:self.window duration:0.25 options:UIViewAnimationOptionTransitionCrossDissolve
-                    animations:^{ self.window.rootViewController = self.tabs; } completion:nil];
+    self.window.overrideUserInterfaceStyle = VGInterfaceStyle;
+    self.tabs.viewControllers = [self buildNavs];
+    self.tabs.selectedIndex = MIN(sel, (NSInteger)self.tabs.viewControllers.count - 1);
+    self.tabs.tabBar.standardAppearance = UITabBar.appearance.standardAppearance;
+    self.tabs.tabBar.scrollEdgeAppearance = UITabBar.appearance.scrollEdgeAppearance;
+    self.tabs.tabBar.tintColor = VGText;
+    self.tabs.view.backgroundColor = VGBackground;
+    UIViewController *root = self.window.rootViewController;
+    if ([root isKindOfClass:VGSidebarController.class]) [(VGSidebarController *)root retheme];
+    [self.tabs setNeedsStatusBarAppearanceUpdate];
+    [self.pill removeFromSuperview];
     self.pill = [VGProgressPill new];
     [self.pill addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
     [self.tabs.view addSubview:self.pill];
@@ -121,10 +160,10 @@
 
     [self buildTabs];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.window.overrideUserInterfaceStyle = VGInterfaceStyle;
     self.window.backgroundColor = VGBackground;
     self.window.tintColor = VGAccent;
-    self.window.rootViewController = self.tabs;
+    [self installRoot:NO];
     [self.window makeKeyAndVisible];
     // Look for a newer VidGrab on GitHub every time the app opens or comes back to the front.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -132,7 +171,7 @@
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification object:nil
                                                          queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [VGUpdater checkQuietlyFrom:self.tabs];
+                        [VGUpdater checkQuietlyFrom:self.tabs];
             });
         }];
     });
@@ -150,6 +189,15 @@
     }];
     [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(NSNotification *n) { [self rebuildForTheme]; }];
+    [NSNotificationCenter.defaultCenter addObserverForName:VGLayoutDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) { [self layoutChanged]; }];
+    [NSNotificationCenter.defaultCenter addObserverForName:VGTaskFinishedNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) {
+        VGTask *t = n.object;
+        if (t.state == VGTaskDone) [VGHaptics success]; else if (t.state == VGTaskFailed) [VGHaptics warning];
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) { [VGHaptics select]; }];
     [VGCrash breadcrumb:@"window ready"];
     return YES;
 }
@@ -161,6 +209,7 @@
 }
 
 - (void)tabBarController:(UITabBarController *)tc didSelectViewController:(UIViewController *)vc {
+    [VGHaptics select];
     self.pill.suppressed = tc.selectedIndex == 1;  // the browser has its own progress button
 }
 

@@ -4,8 +4,11 @@
 #import "VGKeepAlive.h"
 #import "VGPlayerGestures.h"
 #import "VGSubtitles.h"
+#import <objc/runtime.h>
 #import "VGLive.h"
 #import "VGMusic.h"
+#import "VGSidebarController.h"
+#import "VGHaptics.h"
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -224,10 +227,10 @@ static UIButton *RoundButton(NSString *symbol, CGFloat diameter, CGFloat pointSi
     UIImageSymbolConfiguration *c = [UIImageSymbolConfiguration configurationWithPointSize:pointSize weight:UIImageSymbolWeightSemibold];
     [b setImage:[UIImage systemImageNamed:symbol withConfiguration:c] forState:UIControlStateNormal];
     b.tintColor = UIColor.whiteColor;
-    b.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    b.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
     b.layer.cornerRadius = diameter / 2;
     b.layer.borderWidth = 1;
-    b.layer.borderColor = VGStroke.CGColor;
+    b.layer.borderColor = VGPlayerStroke.CGColor;
     b.translatesAutoresizingMaskIntoConstraints = NO;
     [b.widthAnchor constraintEqualToConstant:diameter].active = YES;
     [b.heightAnchor constraintEqualToConstant:diameter].active = YES;
@@ -735,7 +738,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
-        self.backgroundColor = VGBackground;
+        self.backgroundColor = VGPlayerBG;
         self.userInteractionEnabled = NO;
         _glow = [CAGradientLayer layer];
         _glow.type = kCAGradientLayerRadial;
@@ -767,7 +770,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         name.font = VGRounded(34, UIFontWeightHeavy); _name = name;
         UILabel *sub = [UILabel new];
         sub.text = @"By: T4MAG0";
-        sub.textColor = VGSecondary;
+        sub.textColor = VGPlayerSecondary;
         sub.font = VGFont(13, UIFontWeightSemibold); _sub = sub;
         UIStackView *st = [[UIStackView alloc] initWithArrangedSubviews:@[iv, name, sub]];
         st.axis = UILayoutConstraintAxisVertical;
@@ -837,6 +840,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic, strong) VGVideoView *videoView;
 @property (nonatomic, strong) UIView *controls;
 @property (nonatomic, strong) UIButton *closeButton, *pipButton, *playButton, *backButton, *forwardButton;
+@property (nonatomic, strong) UIButton *sleepButton;
+@property (nonatomic, strong) NSDate *sleepAt;
+@property (nonatomic) BOOL sleepAtEnd;
+@property (nonatomic, strong) NSTimer *sleepTimer;
 @property (nonatomic, strong) UIButton *speedButton, *sizeButton, *rotateButton, *captionsButton, *saveButton;
 @property (nonatomic, strong) VGVideo *streamVideo;     // set when this plays from the internet
 @property (nonatomic, strong) VGOption *streamOption;
@@ -930,6 +937,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     return p;
 }
 
+static char kSubAssetKey;
+
 + (void)prepareStream:(NSDictionary *)info completion:(void (^)(AVPlayerItem *, NSString *))completion {
     NSArray *list = [info[@"items"] isKindOfClass:NSArray.class] ? info[@"items"] : @[];
     NSMutableArray<AVURLAsset *> *assets = [NSMutableArray array];
@@ -941,7 +950,11 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         [assets addObject:[AVURLAsset URLAssetWithURL:u options:opts]];
     }
     if (!assets.count) { completion(nil, @"This link can't be streamed. Try Download instead."); return; }
-    if (assets.count == 1) { completion([AVPlayerItem playerItemWithAsset:assets[0]], nil); return; }
+    if (assets.count == 1) {
+        AVPlayerItem *one = [AVPlayerItem playerItemWithAsset:assets[0]];
+        objc_setAssociatedObject(one, &kSubAssetKey, assets[0], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        completion(one, nil); return;
+    }
     // Picture and sound come separately: join them without downloading.
     AVURLAsset *va = assets[0], *aa = assets[1];
     dispatch_group_t g = dispatch_group_create();
@@ -967,7 +980,9 @@ static UILabel *TimeLabel(NSTextAlignment align) {
             [cat insertTimeRange:range ofTrack:at atTime:kCMTimeZero error:&err];
         }
         if (err) { completion(nil, @"Couldn't open the stream. Try Download instead."); return; }
-        completion([AVPlayerItem playerItemWithAsset:comp], nil);
+        AVPlayerItem *joined = [AVPlayerItem playerItemWithAsset:comp];
+        objc_setAssociatedObject(joined, &kSubAssetKey, aa, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // subtitles listen to the sound-only file
+        completion(joined, nil);
     });
 }
 
@@ -1083,7 +1098,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.rowSpacer.hidden = tight;
     self.buttonRow.distribution = tight ? UIStackViewDistributionEqualSpacing : UIStackViewDistributionFill;
     self.buttonRow.spacing = tight ? 4 : 12;
-    for (UIButton *b in @[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.saveButton]) {
+    for (UIButton *b in @[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.sleepButton, self.saveButton]) {
         b.layer.cornerRadius = d / 2;
         for (NSLayoutConstraint *c in b.constraints) {
             if ((c.firstAttribute == NSLayoutAttributeHeight || (c.firstAttribute == NSLayoutAttributeWidth && c.relation == NSLayoutRelationEqual)) && c.secondItem == nil) c.constant = d;
@@ -1238,10 +1253,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.routeButton.tintColor = UIColor.whiteColor;
     self.routeButton.activeTintColor = VGAccent;
     self.routeButton.prioritizesVideoDevices = !self.audioOnly;
-    self.routeButton.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    self.routeButton.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
     self.routeButton.layer.cornerRadius = 22;
     self.routeButton.layer.borderWidth = 1;
-    self.routeButton.layer.borderColor = VGStroke.CGColor;
+    self.routeButton.layer.borderColor = VGPlayerStroke.CGColor;
     self.routeButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.routeButton.widthAnchor constraintEqualToConstant:44].active = YES;
     [self.routeButton.heightAnchor constraintEqualToConstant:44].active = YES;
@@ -1249,10 +1264,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.qualityLabel.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
     [self.qualityLabel setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     self.qualityLabel.tintColor = UIColor.whiteColor;
-    self.qualityLabel.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    self.qualityLabel.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
     self.qualityLabel.layer.cornerRadius = 15;
     self.qualityLabel.layer.borderWidth = 1;
-    self.qualityLabel.layer.borderColor = VGStroke.CGColor;
+    self.qualityLabel.layer.borderColor = VGPlayerStroke.CGColor;
     self.qualityLabel.clipsToBounds = YES;
     self.qualityLabel.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
     self.qualityLabel.userInteractionEnabled = NO;   // only shows what is playing
@@ -1262,10 +1277,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self.qualityLabel.widthAnchor constraintGreaterThanOrEqualToConstant:52].active = YES;
     self.heatPill = [UIButton buttonWithType:UIButtonTypeCustom];
     self.heatPill.titleLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightBold];
-    self.heatPill.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    self.heatPill.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
     self.heatPill.layer.cornerRadius = 15;
     self.heatPill.layer.borderWidth = 1;
-    self.heatPill.layer.borderColor = VGStroke.CGColor;
+    self.heatPill.layer.borderColor = VGPlayerStroke.CGColor;
     self.heatPill.clipsToBounds = YES;
     self.heatPill.userInteractionEnabled = NO;
     self.heatPill.contentEdgeInsets = UIEdgeInsetsMake(0, 10, 0, 10);
@@ -1349,10 +1364,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     self.speedButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.speedButton.titleLabel.font = VGRounded(15, UIFontWeightBold);
     [self.speedButton setTitle:@"1×" forState:UIControlStateNormal];
-    self.speedButton.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
+    self.speedButton.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
     self.speedButton.layer.cornerRadius = 18;
     self.speedButton.layer.borderWidth = 1;
-    self.speedButton.layer.borderColor = VGStroke.CGColor;
+    self.speedButton.layer.borderColor = VGPlayerStroke.CGColor;
     self.speedButton.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
     self.speedButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.speedButton.heightAnchor constraintEqualToConstant:36].active = YES;
@@ -1362,6 +1377,13 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self.rotateButton addTarget:self action:@selector(rotate) forControlEvents:UIControlEventTouchUpInside];
     self.captionsButton = RoundButton(@"captions.bubble", 36, 16);
     self.captionsButton.hidden = YES;
+    self.sleepButton = RoundButton(@"moon.zzz", 36, 16);
+    self.sleepButton.hidden = !self.playlistMode;
+    self.sleepButton.accessibilityLabel = @"Sleep timer";
+    self.sleepButton.showsMenuAsPrimaryAction = YES;
+    { __weak typeof(self) wsl = self;
+      self.sleepButton.menu = [UIMenu menuWithChildren:@[[UIDeferredMenuElement elementWithUncachedProvider:^(void (^done)(NSArray<UIMenuElement *> *)) { done([wsl sleepMenuItems]); }]]]; }
+    [self.sleepButton addTarget:self action:@selector(menuOpened) forControlEvents:UIControlEventMenuActionTriggered];
     self.saveButton = RoundButton(@"arrow.down.to.line", 36, 16);
     self.saveButton.hidden = self.streamVideo == nil;
     self.saveButton.accessibilityLabel = @"Download this video";
@@ -1381,7 +1403,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     UIView *spacer = [UIView new];
     [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow - 1 forAxis:UILayoutConstraintAxisHorizontal];
     // With the playlist buttons there are eight, so they share the width evenly instead of being squeezed.
-    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.saveButton, spacer]];
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[self.speedButton, self.sizeButton, self.rotateButton, self.videoToggleButton, self.shuffleButton, self.repeatButton, self.captionsButton, self.sleepButton, self.saveButton, spacer]];
     buttons.spacing = 12;
     self.buttonRow = buttons; self.rowSpacer = spacer;
     buttons.alignment = UIStackViewAlignmentCenter;
@@ -1394,8 +1416,8 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     tc.imagePadding = 6;
     tc.baseForegroundColor = UIColor.whiteColor;
     tc.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    tc.background.backgroundColor = [VGSurface colorWithAlphaComponent:0.78];
-    tc.background.strokeColor = VGStroke; tc.background.strokeWidth = 1;
+    tc.background.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.78];
+    tc.background.strokeColor = VGPlayerStroke; tc.background.strokeWidth = 1;
     tc.contentInsets = NSDirectionalEdgeInsetsMake(6, 16, 6, 16);
     tc.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey,id> *(NSDictionary<NSAttributedStringKey,id> *a) {
         NSMutableDictionary *d = [a mutableCopy]; d[NSFontAttributeName] = VGRounded(14, UIFontWeightBold); return d; };
@@ -1545,10 +1567,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     t.layer.cornerRadius = 21;
     t.clipsToBounds = YES;
     t.layer.borderWidth = 1;
-    t.layer.borderColor = VGStroke.CGColor;
+    t.layer.borderColor = VGPlayerStroke.CGColor;
     t.translatesAutoresizingMaskIntoConstraints = NO;
     UIView *tint = [UIView new];
-    tint.backgroundColor = [VGSurface colorWithAlphaComponent:0.62];
+    tint.backgroundColor = [VGPlayerSurface colorWithAlphaComponent:0.62];
     tint.translatesAutoresizingMaskIntoConstraints = NO;
     [t.contentView addSubview:tint];
     UIImageView *iv = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:icon]];
@@ -2085,6 +2107,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)finished:(NSNotification *)n {
+    if (self.sleepAtEnd) { self.sleepAtEnd = NO; [self styleSleepButton]; [self refreshPlayState]; [self showControls]; [self updateNowPlaying]; return; }
     if (self.onEnded) { void (^cb)(VGPlayerViewController *) = self.onEnded; if (!self.playlistMode) self.onEnded = nil; cb(self); return; }
     if (!self.key) { [self refreshPlayState]; [self showControls]; [self updateNowPlaying]; return; }
     NSMutableDictionary *d = [[NSUserDefaults.standardUserDefaults dictionaryForKey:[VGPlayerViewController positionsKey]] mutableCopy];
@@ -2093,6 +2116,26 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self refreshPlayState];
     [self showControls];
     [self updateNowPlaying];
+    [self offerToDeleteWatched];
+}
+
+/// Settings > Downloads > Ask to delete finished videos: after a saved video plays to the end, offer to remove it.
+- (void)offerToDeleteWatched {
+    if (!VGDownloadDefaults.askDeleteWatched || !self.key || !self.view.window || self.presentedViewController) return;
+    VGItem *item = nil;
+    for (VGItem *i in [VGEngine shared].items) if ([i.fileName isEqualToString:self.key]) { item = i; break; }
+    if (!item || item.audio) return;
+    NSString *size = [NSByteCountFormatter stringFromByteCount:item.bytes countStyle:NSByteCountFormatterCountStyleFile];
+    NSString *msg = [NSString stringWithFormat:@"You finished watching \u201C%@\u201D. Deleting it frees %@.", item.title.length ? item.title : item.fileName, size];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Delete this video?" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Keep" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) ws = self;
+    [a addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+        VGPlayerViewController *me = ws;
+        void (^remove)(void) = ^{ [[VGEngine shared] deleteItem:item]; };
+        if (me && me.presentingViewController) [me dismissViewControllerAnimated:YES completion:remove]; else remove();
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 // Taking the picture off the player lets the sound keep going when the phone locks or you switch apps.
@@ -2127,6 +2170,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)shutDown {
+    [self.sleepTimer invalidate]; self.sleepTimer = nil;
     gPreparing = NO;
     [self stopLive];
     [self stopSubtitles];
@@ -2255,12 +2299,72 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo = info;
 }
 
+#pragma mark Sleep timer (streaming playlists)
+
+- (NSArray<UIMenuElement *> *)sleepMenuItems {
+    __weak typeof(self) ws = self;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSNumber *m in @[@15, @30, @45, @60]) {
+        [items addObject:[UIAction actionWithTitle:[NSString stringWithFormat:@"Stop after %@ minutes", m] image:nil identifier:nil handler:^(UIAction *a) { [ws setSleepMinutes:m.integerValue]; }]];
+    }
+    [items addObject:[UIAction actionWithTitle:@"Stop at the end of this track" image:nil identifier:nil handler:^(UIAction *a) { [ws setSleepEnd]; }]];
+    if (self.sleepAt || self.sleepAtEnd) {
+        NSString *left = self.sleepAtEnd ? @"at the end of this track" : [NSString stringWithFormat:@"in %d min", (int)ceil(MAX(0, self.sleepAt.timeIntervalSinceNow) / 60.0)];
+        UIAction *off = [UIAction actionWithTitle:[NSString stringWithFormat:@"Turn off timer (stops %@)", left] image:nil identifier:nil handler:^(UIAction *a) { [ws setSleepMinutes:0]; }];
+        off.attributes = UIMenuElementAttributesDestructive;
+        [items addObject:off];
+    }
+    return items;
+}
+
+- (void)styleSleepButton {
+    BOOL on = self.sleepAt || self.sleepAtEnd;
+    [self.sleepButton setImage:[UIImage systemImageNamed:on ? @"moon.zzz.fill" : @"moon.zzz" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    self.sleepButton.tintColor = on ? VGAccent : UIColor.whiteColor;
+}
+
+- (void)setSleepMinutes:(NSInteger)minutes {
+    [self.sleepTimer invalidate]; self.sleepTimer = nil;
+    self.sleepAtEnd = NO;
+    self.sleepAt = minutes > 0 ? [NSDate dateWithTimeIntervalSinceNow:minutes * 60.0] : nil;
+    if (self.sleepAt) {
+        __weak typeof(self) ws = self;
+        self.sleepTimer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) { [ws sleepCheck]; }];
+        [NSRunLoop.mainRunLoop addTimer:self.sleepTimer forMode:NSRunLoopCommonModes];
+    }
+    [self styleSleepButton];
+    [self showMessage:minutes > 0 ? [NSString stringWithFormat:@"Sleep timer: %ld min", (long)minutes] : @"Sleep timer off"];
+}
+
+- (void)setSleepEnd {
+    [self.sleepTimer invalidate]; self.sleepTimer = nil;
+    self.sleepAt = nil;
+    self.sleepAtEnd = YES;
+    [self styleSleepButton];
+    [self showMessage:@"Stops at the end of this track"];
+}
+
+- (void)sleepCheck {
+    if (!self.sleepAt || self.sleepAt.timeIntervalSinceNow > 0) return;
+    [self.sleepTimer invalidate]; self.sleepTimer = nil;
+    self.sleepAt = nil;
+    [self styleSleepButton];
+    AVPlayer *p = self.keptPlayer;
+    __block int step = 0;   // fade out over about 1.5 seconds, then pause
+    __weak typeof(self) ws = self;
+    [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) {
+        step++;
+        p.volume = (float)MAX(0, 1 - step / 15.0);
+        if (step >= 15) { [t invalidate]; [ws pausePlayback]; p.volume = 1; }
+    }];
+}
+
 #pragma mark Playlist
 
 - (void)setPlaylistMode:(BOOL)on {
     _playlistMode = on;
     self.prevTrackButton.hidden = self.nextTrackButton.hidden = !on;
-    self.shuffleButton.hidden = self.repeatButton.hidden = self.videoToggleButton.hidden = !on;
+    self.shuffleButton.hidden = self.repeatButton.hidden = self.videoToggleButton.hidden = self.sleepButton.hidden = !on;
     [self refreshRemoteMode];
     [self updateControlLayout];
 }
@@ -2313,6 +2417,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)shuffleTapped {
+    [VGHaptics tap];
     self.shuffleOn = !self.shuffleOn;
     [self styleModeButtons];
     [self showMessage:self.shuffleOn ? @"Shuffle on" : @"Shuffle off"];
@@ -2321,6 +2426,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)repeatTapped {
+    [VGHaptics tap];
     self.repeatMode = (self.repeatMode + 1) % 3;
     [self styleModeButtons];
     [self showMessage:@[@"Repeat off", @"Repeat all", @"Repeat one"][self.repeatMode]];
@@ -2420,6 +2526,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     [self updateNowPlaying];
     [self showControls];
     [self scheduleHide];
+    if (VGSubtitles.enabled && VGSubtitles.startOn && VGSubtitles.currentModelReady) [self startSubtitles];
 }
 
 #pragma mark Subtitles and audio tracks
@@ -2519,17 +2626,36 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     if ((shown == nil && self.shownSubtitle == nil) || [shown isEqualToString:self.shownSubtitle]) return;
     self.shownSubtitle = shown;
     if (line.length) {
-        self.subtitleLabel.font = isStatus ? VGFont(14, UIFontWeightMedium) : VGFont(17, UIFontWeightSemibold);
-        self.subtitleLabel.textColor = isStatus ? VGSecondary : UIColor.whiteColor;
+        self.subtitleLabel.font = isStatus ? VGFont(14, UIFontWeightMedium) : VGFont(VGSubtitles.fontSize, UIFontWeightSemibold);
+        self.subtitleLabel.textColor = isStatus ? VGPlayerSecondary : VGSubtitles.lineColor;
         self.subtitleLabel.text = line;
+        self.subtitleBox.backgroundColor = VGSubtitles.boxColor;
+        BOOL bare = !isStatus && VGSubtitles.backgroundStyle == 2;   // no box: a soft shadow keeps the words readable
+        self.subtitleLabel.layer.shadowColor = UIColor.blackColor.CGColor;
+        self.subtitleLabel.layer.shadowOpacity = bare ? 1 : 0;
+        self.subtitleLabel.layer.shadowRadius = 3;
+        self.subtitleLabel.layer.shadowOffset = CGSizeMake(0, 1);
     }
     [UIView animateWithDuration:0.15 animations:^{ self.subtitleBox.alpha = line.length ? 1 : 0; }];
 }
 
 - (void)startSubtitles {
-    if (self.subs || !self.fileURL) return;
-    VGSubtitleEngine *e = [[VGSubtitleEngine alloc] initWithURL:self.fileURL key:self.key ?: self.fileURL.lastPathComponent quality:VGSubtitles.quality];
+    if (self.subs) return;
+    VGSubtitleEngine *e;
     __weak typeof(self) ws = self;
+    if (self.streamVideo) {   // playing from the internet: listen through the stream's own sound
+        AVPlayerItem *it = self.keptPlayer.currentItem;
+        AVAsset *src = objc_getAssociatedObject(it, &kSubAssetKey) ?: it.asset;
+        if (!src) return;
+        e = [[VGSubtitleEngine alloc] initWithAsset:src quality:VGSubtitles.quality];
+        e.onUnreadable = ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (ws.subs == e) { [ws stopSubtitles]; [ws buildMediaMenu]; }
+            });
+        };
+    } else if (self.fileURL) {
+        e = [[VGSubtitleEngine alloc] initWithURL:self.fileURL key:self.key ?: self.fileURL.lastPathComponent quality:VGSubtitles.quality];
+    } else return;
     e.onChange = ^{ VGPlayerViewController *me = ws; if (me.subs) [me refreshSubtitleAt:[me position]]; };
     [e setPlayhead:[self position]];
     self.subs = e;
@@ -2583,10 +2709,6 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 }
 
 - (void)toggleSubtitles {
-    if (self.streamVideo) {
-        [self toast:@"Auto subtitles work on downloaded videos" icon:@"captions.bubble"];
-        return;
-    }
     if (self.subs) {
         [self stopSubtitles];
         VGSubtitles.startOn = NO;
@@ -2731,9 +2853,11 @@ static VGMiniVideoView *gMiniBar;
     UIView *host = win;
     NSLayoutYAxisAnchor *bottom = win.safeAreaLayoutGuide.bottomAnchor;
     CGFloat gap = -8;
+    if ([root isKindOfClass:VGSidebarController.class]) root = ((VGSidebarController *)root).tabs;   // iPad layout
     if ([root isKindOfClass:UITabBarController.class]) {
         UITabBarController *tbc = (UITabBarController *)root;
-        host = tbc.view; bottom = tbc.tabBar.topAnchor; gap = -8;
+        host = tbc.view; gap = -8;
+        bottom = tbc.tabBar.hidden ? tbc.view.safeAreaLayoutGuide.bottomAnchor : tbc.tabBar.topAnchor;
     }
     m.translatesAutoresizingMaskIntoConstraints = NO;
     [host addSubview:m];

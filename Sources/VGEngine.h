@@ -105,6 +105,8 @@ extern NSString *const VGTaskFinishedNotification;
 /// The first running download, for compact progress displays.
 @property (nonatomic, readonly, nullable) VGTask *leadTask;
 
+/// Starts waiting downloads when there is room (and, with Wi-Fi only on, a Wi-Fi connection).
+- (void)pump;
 - (void)pauseTask:(VGTask *)task;
 - (void)resumeTask:(VGTask *)task;
 - (void)start;

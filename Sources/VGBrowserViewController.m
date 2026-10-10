@@ -7,6 +7,7 @@
 #import "VGQualitySheet.h"
 #import "VGBlocker.h"
 #import "VGCrash.h"
+#import "VGBrowserHistory.h"
 
 // Injected into every page: finds the main playing video and puts a Download
 // button on top of it. Taps are sent to the app through the "vidgrab" handler.
@@ -59,6 +60,8 @@ static NSString *const kOverlayJS = @""
 @property (nonatomic, strong) UIView *startPage;
 @property (nonatomic, strong) UIStackView *favGrid;
 @property (nonatomic, strong) UIButton *starButton;
+@property (nonatomic, strong) UIButton *historyButton;   // top bar: opens History
+@property (nonatomic, strong) UIButton *lastCard;        // start page: the last page opened
 @property (nonatomic, strong) UIButton *fab;          // floating Download button
 @property (nonatomic, strong) VGProgressBar *fabBar;  // progress inside it
 @property (nonatomic, strong) UILabel *fabBadge;      // number of downloads when more than one
@@ -124,6 +127,9 @@ static NSString *const kOverlayJS = @""
     self.closeButton.accessibilityLabel = @"Close site";
     self.backButton = [self iconButton:@"chevron.backward" action:@selector(goBack)];
     self.reloadButton = [self iconButton:@"arrow.clockwise" action:@selector(reloadOrStop)];
+    self.historyButton = [self iconButton:@"clock" action:@selector(showHistory)];
+    self.historyButton.accessibilityLabel = @"History";
+    [self.historyButton.widthAnchor constraintEqualToConstant:34].active = YES;
     self.shieldButton = [self iconButton:@"shield.lefthalf.filled" action:nil];
     self.shieldButton.accessibilityLabel = @"Ad blocker";
     self.shieldButton.showsMenuAsPrimaryAction = YES;
@@ -158,7 +164,7 @@ static NSString *const kOverlayJS = @""
     self.address.rightViewMode = UITextFieldViewModeNever;
     for (UIView *v in @[mag, self.address]) { v.translatesAutoresizingMaskIntoConstraints = NO; [field addSubview:v]; }
 
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.closeButton, self.backButton, field, self.shieldButton, self.reloadButton]];
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.closeButton, self.backButton, field, self.historyButton, self.shieldButton, self.reloadButton]];
     row.spacing = 4;
     row.alignment = UIStackViewAlignmentCenter;
     row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -209,11 +215,12 @@ static NSString *const kOverlayJS = @""
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    [self refreshLast];
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:YES animated:animated];
 }
 
-- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+- (UIStatusBarStyle)preferredStatusBarStyle { return VGLight ? UIStatusBarStyleDarkContent : UIStatusBarStyleLightContent; }
 
 - (UIButton *)iconButton:(NSString *)icon action:(SEL)action {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -492,6 +499,29 @@ static NSString *normalizedLink(NSString *text) {
     sub.textColor = VGSecondary;
     sub.numberOfLines = 0;
 
+    UILabel *recentTitle = [UILabel new];
+    recentTitle.attributedText = [[NSAttributedString alloc] initWithString:@"LAST OPENED" attributes:@{
+        NSFontAttributeName: VGFont(12, UIFontWeightHeavy), NSForegroundColorAttributeName: VGTertiary, NSKernAttributeName: @1.0}];
+    UIButton *seeAll = [UIButton buttonWithType:UIButtonTypeSystem];
+    [seeAll setImage:[UIImage systemImageNamed:@"clock" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightBold]] forState:UIControlStateNormal];
+    [seeAll setTitle:@" History" forState:UIControlStateNormal];
+    seeAll.titleLabel.font = VGFont(13, UIFontWeightBold);
+    seeAll.tintColor = VGAccent;
+    [seeAll addTarget:self action:@selector(showHistory) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *recentRow = [[UIStackView alloc] initWithArrangedSubviews:@[recentTitle, seeAll]];
+    recentRow.distribution = UIStackViewDistributionEqualSpacing;
+    recentRow.alignment = UIStackViewAlignmentCenter;
+
+    self.lastCard = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.lastCard.backgroundColor = VGSurface;
+    self.lastCard.layer.cornerRadius = 14;
+    self.lastCard.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    self.lastCard.contentEdgeInsets = UIEdgeInsetsMake(12, 14, 12, 14);
+    self.lastCard.titleLabel.numberOfLines = 2;
+    self.lastCard.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.lastCard addTarget:self action:@selector(openLast) forControlEvents:UIControlEventTouchUpInside];
+    [self.lastCard.heightAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
+
     UILabel *favTitle = [UILabel new];
     favTitle.attributedText = [[NSAttributedString alloc] initWithString:@"FAVORITES" attributes:@{
         NSFontAttributeName: VGFont(12, UIFontWeightHeavy), NSForegroundColorAttributeName: VGTertiary, NSKernAttributeName: @1.0}];
@@ -507,10 +537,11 @@ static NSString *normalizedLink(NSString *text) {
     tip.textColor = VGTertiary;
     tip.numberOfLines = 0;
 
-    UIStackView *s = [[UIStackView alloc] initWithArrangedSubviews:@[h, sub, favTitle, self.favGrid, tip]];
+    UIStackView *s = [[UIStackView alloc] initWithArrangedSubviews:@[h, sub, recentRow, self.lastCard, favTitle, self.favGrid, tip]];
     s.axis = UILayoutConstraintAxisVertical;
     s.spacing = 10;
     [s setCustomSpacing:26 afterView:sub];
+    [s setCustomSpacing:26 afterView:self.lastCard];
     [s setCustomSpacing:14 afterView:favTitle];
     [s setCustomSpacing:26 afterView:self.favGrid];
     s.translatesAutoresizingMaskIntoConstraints = NO;
@@ -527,6 +558,39 @@ static NSString *normalizedLink(NSString *text) {
     ]];
     self.startPage = page;
     [self reloadFavorites];
+    [self refreshLast];
+}
+
+#pragma mark History
+
+- (void)refreshLast {
+    NSDictionary *e = VGBrowserHistory.latest;
+    self.lastCard.hidden = e == nil;
+    if (!e) return;
+    NSURL *u = [NSURL URLWithString:e[@"url"]];
+    NSString *host = u.host ?: @"";
+    if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+    NSString *title = [e[@"title"] length] ? e[@"title"] : host;
+    NSMutableAttributedString *t = [[NSMutableAttributedString alloc] initWithString:title attributes:@{
+        NSFontAttributeName: VGFont(15, UIFontWeightBold), NSForegroundColorAttributeName: VGText}];
+    [t appendAttributedString:[[NSAttributedString alloc] initWithString:[@"\n" stringByAppendingString:host] attributes:@{
+        NSFontAttributeName: VGFont(12, UIFontWeightMedium), NSForegroundColorAttributeName: VGSecondary}]];
+    [self.lastCard setAttributedTitle:t forState:UIControlStateNormal];
+}
+
+- (void)openLast {
+    NSString *url = VGBrowserHistory.latest[@"url"];
+    if (url.length) [self open:url];
+}
+
+- (void)showHistory {
+    [self.address resignFirstResponder];
+    VGHistoryViewController *h = [VGHistoryViewController new];
+    __weak typeof(self) wself = self;
+    h.openURL = ^(NSString *url) { [wself open:url]; };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:h];
+    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)reloadFavorites {
@@ -904,6 +968,7 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     [self.web stopLoading];
     [self.web evaluateJavaScript:@"document.querySelectorAll('video').forEach(function(v){v.pause()})" completionHandler:nil];
     [self.web loadHTMLString:@"<html><body style='background:#0A0A0D'></body></html>" baseURL:nil];
+    [self refreshLast];
     self.startPage.hidden = NO;
     self.startPage.alpha = 0;
     [UIView animateWithDuration:0.2 animations:^{ self.startPage.alpha = 1; }];
@@ -955,7 +1020,10 @@ static BOOL looksLikeVideoPage(NSURL *u) {
     [self.captured removeAllObjects]; self.activeStream = nil; self.playingSrc = nil;   // a new page: what the last one played no longer applies
     [self updateButtons];
 }
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { [self updateButtons]; [self updateAddress]; }
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    if (self.startPage.hidden) [VGBrowserHistory noteURL:webView.URL title:webView.title];
+    [self updateButtons]; [self updateAddress];
+}
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error { [self updateButtons]; }
 
 // Links that open a new window load in this tab instead.

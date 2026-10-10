@@ -159,7 +159,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = VGSurface;
-    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.overrideUserInterfaceStyle = VGInterfaceStyle;
     NSDictionary *cfg = [self config];
 
     // Coffee badge

@@ -29,6 +29,16 @@ extern NSString *const VGMusicPlaylistsChanged;
 @property (nonatomic) BOOL shuffle;
 @property (nonatomic) NSInteger repeatMode;   // 0 off, 1 all, 2 one
 @property (nonatomic, readonly) double position, duration;
+/// Smooth changes between songs: 0 off, 1 gapless, otherwise the seconds the two songs overlap (2, 4, 6, 8, 12).
+@property (class, nonatomic) NSInteger crossfade;
++ (NSArray<NSNumber *> *)crossfadeChoices;
++ (NSString *)nameForCrossfade:(NSInteger)c;
+/// Sleep timer: the music fades out and stops after this many minutes, or at the end of the song that is playing.
+@property (nonatomic, readonly) BOOL sleepActive;
+@property (nonatomic, readonly) BOOL sleepAtEndOfSong;
+@property (nonatomic, readonly) NSTimeInterval sleepRemaining;   // seconds left; 0 when off or set to the end of the song
+- (void)setSleepMinutes:(NSInteger)minutes;                      // 0 turns it off
+- (void)setSleepAtEndOfSong;
 - (void)playQueue:(NSArray<VGItem *> *)items startAt:(NSUInteger)index;
 - (void)togglePlay;
 - (void)pause;

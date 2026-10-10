@@ -13,6 +13,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, nonatomic) NSInteger threads;
 /// YES = downloads stay in Files only: every Save to Photos button is hidden.
 @property (class, nonatomic) BOOL filesOnly;
+/// YES = new downloads wait while the phone is on mobile data (or a personal hotspot) and start on Wi-Fi.
+@property (class, nonatomic) BOOL wifiOnly;
+/// YES = after a video from Downloads or the Library plays to the end, ask whether to delete it.
+@property (class, nonatomic) BOOL askDeleteWatched;
 + (NSArray<NSNumber *> *)threadChoices;
 /// The extra-info text for a download with the thread count added.
 + (NSString *)extraWithThreads:(NSString *)extra;

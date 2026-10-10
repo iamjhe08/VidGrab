@@ -7,7 +7,8 @@ NSString *const VGThemeDidChangeNotification = @"VGThemeDidChangeNotification";
 @property (nonatomic, readwrite) UIColor *background, *surface, *surface2, *stroke, *text, *secondary, *tertiary;
 @property (nonatomic, readwrite) UIColor *accent, *accent2, *accentSoft, *tabBar, *listBackground, *selectedCell, *editButton;
 @property (nonatomic, readwrite) NSString *title, *detail;
-@property (nonatomic, readwrite) BOOL glass;
+@property (nonatomic, readwrite) BOOL glass, light;
+@property (nonatomic, readwrite) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 @end
 
 @implementation VGPalette
@@ -21,6 +22,7 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
     p.text = UIColor.whiteColor; p.secondary = VGHex(secondary); p.tertiary = VGHex(tertiary);
     p.accent = VGHex(accent); p.accent2 = VGHex(accent2); p.accentSoft = VGHex(soft);
     p.tabBar = VGHex(tab); p.listBackground = VGHex(list); p.selectedCell = VGHex(selected); p.editButton = VGHex(edit);
+    p.playerBackground = p.background; p.playerSurface = p.surface; p.playerStroke = p.stroke; p.playerSecondary = p.secondary;
     return p;
 }
 
@@ -41,6 +43,9 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
                  0x07060E, 0x100E1C, 0x1A1730, 0x2F2A55, 0xA9A4C4, 0x6F6A8E, 0x8A6CFF, 0x22D3EE, 0xBFAEFF, 0x0A0914, 0x0C0A18, 0x231E40, 0x302A52),
         ];
         ((VGPalette *)a[4]).glass = YES;
+        // GD: a true-black canvas with a warm gold accent.
+        a = [a arrayByAddingObject:make(@"GD", @"",
+                 0x000000, 0x0C0C0C, 0x161616, 0x262626, 0xA8A8A8, 0x6A6A6A, 0xF5B800, 0xFFD54A, 0xFFE08A, 0x000000, 0x050505, 0x2A2410, 0x363636)];
     });
     return a;
 }
@@ -137,11 +142,11 @@ static UIButton *makeButton(NSString *title, NSString *icon, UIColor *bg, UIColo
 }
 
 UIButton *VGPrimaryButton(NSString *title, NSString *icon) {
-    return makeButton(title, icon, UIColor.whiteColor, VGHex(0x0A0A0D));
+    return VGPalette.current.light ? makeButton(title, icon, VGText, UIColor.whiteColor) : makeButton(title, icon, UIColor.whiteColor, VGHex(0x0A0A0D));
 }
 
 UIButton *VGSecondaryButton(NSString *title, NSString *icon) {
-    return makeButton(title, icon, VGSurface2, UIColor.whiteColor);
+    return makeButton(title, icon, VGSurface2, VGText);
 }
 
 UIImage *VGThemedIcon(void) {

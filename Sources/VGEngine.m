@@ -1,4 +1,6 @@
 #import "VGEngine.h"
+#import <Network/Network.h>
+#import "VGDownloadDefaults.h"
 #import "VGDownloadDefaults.h"
 #import "VGAudioTags.h"
 #import "VGCoverSearch.h"
@@ -169,7 +171,24 @@ static BOOL isAudioKind(NSString *k) {
     return e;
 }
 
+static BOOL gPathKnown, gExpensive;   // from the network monitor: mobile data or a personal hotspot counts as expensive
+
+- (void)watchNetwork {
+    static nw_path_monitor_t monitor;
+    if (monitor) return;
+    monitor = nw_path_monitor_create();
+    nw_path_monitor_set_queue(monitor, dispatch_get_main_queue());
+    __weak typeof(self) ws = self;
+    nw_path_monitor_set_update_handler(monitor, ^(nw_path_t path) {
+        gPathKnown = YES;
+        gExpensive = nw_path_is_expensive(path);
+        [ws pump];
+    });
+    nw_path_monitor_start(monitor);
+}
+
 - (void)start {
+    [self watchNetwork];
     [self loadLibrary];
     [[VGPython shared] start];
     [self resumePending];
@@ -830,9 +849,14 @@ static NSString *resumeFile(void) { return [resumeRoot() stringByAppendingPathCo
 - (void)pump {
     NSUInteger running = 0;
     for (VGTask *t in self.queue) if (t.state == VGTaskRunning) running++;
+    BOOL holdForWiFi = VGDownloadDefaults.wifiOnly && (!gPathKnown || gExpensive);
     for (VGTask *t in self.queue) {
         if (running >= kMaxRunning) break;
         if (t.state != VGTaskQueued) continue;
+        if (holdForWiFi) {   // Settings > Downloads > Wi-Fi only
+            if (![t.stage isEqualToString:@"Waiting for Wi-Fi"]) { t.stage = @"Waiting for Wi-Fi"; [self post:t force:YES]; }
+            continue;
+        }
         running++;
         [self run:t];
     }

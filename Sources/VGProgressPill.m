@@ -202,6 +202,11 @@ static NSString *const kYKey = @"vgBubbleY";         // 0...1 down the screen
     self.badge.hidden = n < 2;
     self.accessibilityValue = [NSString stringWithFormat:@"%@, %lu %@", self.percent.text, (unsigned long)n, n == 1 ? @"download" : @"downloads"];
 
+    // A little pop when the last download finishes.
+    if (n == 0 && self.showing && !UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView animateWithDuration:0.12 animations:^{ self.transform = CGAffineTransformMakeScale(1.25, 1.25); }
+                         completion:^(BOOL f) { [UIView animateWithDuration:0.2 animations:^{ self.transform = CGAffineTransformIdentity; }]; }];
+    }
     if (show == self.showing) return;
     self.showing = show;
     if (show) {

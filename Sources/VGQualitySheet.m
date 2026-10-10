@@ -88,7 +88,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = VGSurface;
-    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.overrideUserInterfaceStyle = VGInterfaceStyle;
 
     // Header: thumbnail + title
     self.thumb = [UIImageView new];

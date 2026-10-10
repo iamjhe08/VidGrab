@@ -14,10 +14,13 @@
 #import "VGCoverSearch.h"
 #import "VGSettingsBackup.h"
 #import "VGCreditsViewController.h"
+#import "VGMusic.h"
+#import "VGHaptics.h"
+#import "VGSidebarController.h"
 #import <AVFoundation/AVFoundation.h>
 
 // The order the sections are shown in: downloading, playing, privacy, then housekeeping, and About last.
-typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
+typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionInterface, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
 
 @interface VGSettingsViewController ()
 @property (nonatomic, copy) NSString *cacheSize;
@@ -31,7 +34,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
 + (void)presentFrom:(UIViewController *)host {
     VGSettingsViewController *s = [[VGSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:s];
-    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    nav.overrideUserInterfaceStyle = VGInterfaceStyle;
     nav.navigationBar.prefersLargeTitles = NO;
     [host presentViewController:nav animated:YES completion:nil];
 }
@@ -86,6 +89,13 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     }];
 }
 
+- (void)tableView:(UITableView *)tv willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)ip {
+    UISwitch *sw = [cell.accessoryView isKindOfClass:UISwitch.class] ? (UISwitch *)cell.accessoryView : nil;
+    if (!sw || sw.tag == 7117) return;   // one tap sound per switch, added once
+    sw.tag = 7117;
+    [sw addAction:[UIAction actionWithHandler:^(UIAction *a) { [VGHaptics select]; }] forControlEvents:UIControlEventValueChanged];
+}
+
 #pragma mark Table
 
 // The order rows are shown in. Each number is the row's original position, so the row code itself doesn't change.
@@ -115,11 +125,12 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     switch (section) {
         case VGSectionStorage: return 3;
         case VGSectionEngine: return 4;
-        case VGSectionDownloads: return 4;
+        case VGSectionDownloads: return 6;
         case VGSectionFloat: return 4;
         case VGSectionGestures: return 5;
-        case VGSectionSubtitles: return 3;
-        case VGSectionAudio: return 1;
+        case VGSectionSubtitles: return 6;
+        case VGSectionAudio: return 2;
+        case VGSectionInterface: return 2;
         case VGSectionBackup: return 2;
         case VGSectionVault: return [VGVaultLock usesPasscode] ? 2 : 1;
         default: return 4;   // About: version, GitHub, check for updates, credits
@@ -127,7 +138,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
 }
 
 - (NSString *)sectionTitle:(NSInteger)section {
-    return @[@"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
+    return @[@"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Interface", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
 }
 
 // A small exclamation button in front of the section title; it opens and closes the section's note.
@@ -183,7 +194,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     if (section == VGSectionAbout)
         return @"VidGrab checks for new versions every time you open it. Updates keep your downloads and settings.";
     if (section == VGSectionDownloads)
-        return [NSString stringWithFormat:@"%@\n\nConnections per download: how many pieces are fetched at once. It helps most with downloads that arrive in many small parts. Files only hides every Save to Photos button, so your downloads stay in VidGrab's folder in the Files app.", VGDownloadDefaults.skipSheet ? @"The Download card shows only a Start button and uses these choices. Switch to Stream on the card to see every quality. Set either one to Always ask to pick a quality every time. Playlists always ask." : @"Right now the Download card shows every quality. To get just a Start button, set Default type to Video and pick a Default quality, or set Default type to Audio only."];
+        return [NSString stringWithFormat:@"%@\n\nConnections per download: how many pieces are fetched at once. It helps most with downloads that arrive in many small parts. Files only hides every Save to Photos button, so your downloads stay in VidGrab's folder in the Files app. Wi-Fi only makes new downloads wait while you are on mobile data or a hotspot; ones already running keep going. Ask to delete finished videos shows a question after a saved video plays to the end.", VGDownloadDefaults.skipSheet ? @"The Download card shows only a Start button and uses these choices. Switch to Stream on the card to see every quality. Set either one to Always ask to pick a quality every time. Playlists always ask." : @"Right now the Download card shows every quality. To get just a Start button, set Default type to Video and pick a Default quality, or set Default type to Audio only."];
     if (section == VGSectionEngine)
         return @"With Find copied links on, a video link you copied shows up on Home as soon as you open VidGrab. With Keep downloading in background on, downloads carry on when you leave the app and you get a notification when they finish. If downloads from a site stop working, update the engine: sites change often and fixes arrive here first.";
     if (section == VGSectionFloat) {
@@ -196,8 +207,10 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
         return @"In the video player, swipe up or down on one half of the screen to change brightness and on the other half to change volume. Brightness/Volume gesture turns both on or off and Brightness side picks which half does what; they work when the phone is sideways. Swipe to seek jumps forward or back as you swipe sideways, in either direction of the phone, and the video follows your finger frame by frame. Seek distance is how far one swipe across the whole screen jumps. Progress line shows a thin bar along the bottom edge while the buttons are hidden. Brightness goes back to normal when you close the player. Swipes that start on the player's own buttons still work as usual.";
     if (section == VGSectionSubtitles)
         return @"Auto subtitles listen to the video on your phone and write what is said in English, whatever the language. Nothing is uploaded and no account is needed. The speech model downloads once, only when you turn this on. It uses extra battery and warms the phone while it works, and older phones can fall behind the video, so Fast is the safe choice. Accuracy drops with music, background noise and rare languages. In the player, turn it on from the CC button.";
+    if (section == VGSectionInterface)
+        return @"iPad layout swaps the bottom tab bar for a list on the left side, with the page next to it, and only shows on iPad. Haptic feedback gives a small tap on the phone when you switch tabs, flip a switch, or a download finishes.";
     if (section == VGSectionAudio)
-        return @"With Find cover art online on, VidGrab looks up each new audio download (MP3, M4A, WAV, FLAC) on the internet and uses its album picture, and fills in a missing artist and album. If nothing matches, the picture from the video is kept. You can also search by hand: Library > hold an audio file > Edit audio info > Find cover art online. Only the song name and artist are sent for the search.";
+        return @"Crossfade: Gapless starts the next song the moment one ends. Seconds blend the end of one song into the start of the next. It only applies in the Library music player. With Find cover art online on, VidGrab looks up each new audio download (MP3, M4A, WAV, FLAC) on the internet and uses its album picture, and fills in a missing artist and album. If nothing matches, the picture from the video is kept. You can also search by hand: Library > hold an audio file > Edit audio info > Find cover art online. Only the song name and artist are sent for the search.";
     if (section == VGSectionBackup)
         return @"Save your settings to a file, then load it after reinstalling or on another phone. It includes your switches, ad blocker sites and browser favorites. Your downloads, vault passcode and website sign-ins are never included.";
     if (section == VGSectionVault)
@@ -269,6 +282,17 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
             sw.on = VGDownloadDefaults.filesOnly;
             sw.onTintColor = VGAccent;
             [sw addTarget:self action:@selector(filesOnlyChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        if (ip.row == 4 || ip.row == 5) {
+            BOOL wifi = ip.row == 4;
+            UITableViewCell *c = [self cellWithTitle:wifi ? @"Wi-Fi only" : @"Ask to delete finished videos" value:nil icon:wifi ? @"wifi" : @"trash" tint:nil];
+            UISwitch *sw = [UISwitch new];
+            sw.on = wifi ? VGDownloadDefaults.wifiOnly : VGDownloadDefaults.askDeleteWatched;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:wifi ? @selector(wifiOnlyChanged:) : @selector(askDeleteChanged:) forControlEvents:UIControlEventValueChanged];
             c.accessoryView = sw;
             c.selectionStyle = UITableViewCellSelectionStyleNone;
             return c;
@@ -364,6 +388,33 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
         c.selectionStyle = UITableViewCellSelectionStyleNone;
         return c;
     }
+    if (ip.section == VGSectionAudio && ip.row == 1) {
+        UITableViewCell *c = [self cellWithTitle:@"Crossfade" value:[VGMusicPlayer nameForCrossfade:VGMusicPlayer.crossfade] icon:@"waveform.path" tint:nil];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return c;
+    }
+    if (ip.section == VGSectionInterface) {
+        BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+        if (ip.row == 0) {
+            UITableViewCell *c = [self cellWithTitle:@"iPad layout" value:pad ? nil : @"iPad only" icon:@"sidebar.left" tint:pad ? nil : VGTertiary];
+            UISwitch *sw = [UISwitch new];
+            sw.on = VGSidebarController.layoutOn;
+            sw.enabled = pad;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:@selector(padLayoutChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        UITableViewCell *c = [self cellWithTitle:@"Haptic feedback" value:nil icon:@"hand.tap" tint:nil];
+        UISwitch *sw = [UISwitch new];
+        sw.on = VGHaptics.enabled;
+        sw.onTintColor = VGAccent;
+        [sw addTarget:self action:@selector(hapticsChanged:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+        return c;
+    }
     if (ip.section == VGSectionAudio) {
         UITableViewCell *c = [self cellWithTitle:@"Find cover art online" value:nil icon:@"photo.on.rectangle" tint:nil];
         UISwitch *sw = [UISwitch new];
@@ -390,6 +441,15 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
             UITableViewCell *c = [self cellWithTitle:@"Quality" value:[VGSubtitles nameFor:VGSubtitles.quality] icon:@"slider.horizontal.3" tint:on ? nil : VGTertiary];
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             if (!on) c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        if (ip.row >= 3) {
+            NSArray *titles = @[@"Text size", @"Text color", @"Background"];
+            NSArray *icons = @[@"textformat.size", @"paintpalette", @"rectangle.fill"];
+            NSInteger idx = ip.row - 3;
+            NSString *val = idx == 0 ? VGSubtitles.sizeNames[VGSubtitles.textSize] : idx == 1 ? VGSubtitles.colorNames[VGSubtitles.textColor] : VGSubtitles.backgroundNames[VGSubtitles.backgroundStyle];
+            UITableViewCell *c = [self cellWithTitle:titles[idx] value:val icon:icons[idx] tint:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
         VGSubtitleQuality q = VGSubtitles.quality;
@@ -450,6 +510,8 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     else if (ip.section == VGSectionGestures && row == 3) [self chooseSeekDistance:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionSubtitles && row == 1 && VGSubtitles.enabled) [self chooseSubtitleQuality:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionSubtitles && row == 2 && VGSubtitles.enabled) [self tapSpeechModel:[tv cellForRowAtIndexPath:ip]];
+    else if (ip.section == VGSectionSubtitles && row >= 3) [self chooseSubtitleStyle:row - 3 from:[tv cellForRowAtIndexPath:ip]];
+    else if (ip.section == VGSectionAudio && row == 1) [self chooseCrossfade:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionBackup && row == 0) [VGSettingsBackup exportFrom:self];
     else if (ip.section == VGSectionBackup && row == 1) [VGSettingsBackup importFrom:self completion:^{ [tv reloadData]; }];
     else if (ip.section == VGSectionVault && row == 0) [VGVaultLock changeLockFrom:self completion:^{ [tv reloadData]; }];
@@ -651,6 +713,44 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
 }
 
 - (void)filesOnlyChanged:(UISwitch *)sw { VGDownloadDefaults.filesOnly = sw.on; }
+
+- (void)wifiOnlyChanged:(UISwitch *)sw {
+    VGDownloadDefaults.wifiOnly = sw.on;
+    [[VGEngine shared] pump];   // turning it off lets waiting downloads start right away
+}
+- (void)askDeleteChanged:(UISwitch *)sw { VGDownloadDefaults.askDeleteWatched = sw.on; }
+- (void)hapticsChanged:(UISwitch *)sw { VGHaptics.enabled = sw.on; if (sw.on) [VGHaptics select]; }
+- (void)padLayoutChanged:(UISwitch *)sw {
+    VGSidebarController.layoutOn = sw.on;   // the whole screen changes at once
+    [NSNotificationCenter.defaultCenter postNotificationName:VGLayoutDidChangeNotification object:nil];
+}
+
+/// A list of choices in an action sheet; `done` gets the position that was picked.
+- (void)pickFrom:(UIView *)from title:(NSString *)title names:(NSArray<NSString *> *)names selected:(NSInteger)sel done:(void (^)(NSInteger))done {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSInteger i = 0; i < (NSInteger)names.count; i++) {
+        NSString *n = i == sel ? [names[i] stringByAppendingString:@"  \u2713"] : names[i];
+        [a addAction:[UIAlertAction actionWithTitle:n style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { done(i); [self.tableView reloadData]; }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = from;
+    a.popoverPresentationController.sourceRect = from.bounds;
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)chooseSubtitleStyle:(NSInteger)which from:(UIView *)from {
+    if (which == 0) [self pickFrom:from title:@"Text size" names:VGSubtitles.sizeNames selected:VGSubtitles.textSize done:^(NSInteger i) { VGSubtitles.textSize = i; }];
+    else if (which == 1) [self pickFrom:from title:@"Text color" names:VGSubtitles.colorNames selected:VGSubtitles.textColor done:^(NSInteger i) { VGSubtitles.textColor = i; }];
+    else [self pickFrom:from title:@"Background" names:VGSubtitles.backgroundNames selected:VGSubtitles.backgroundStyle done:^(NSInteger i) { VGSubtitles.backgroundStyle = i; }];
+}
+
+- (void)chooseCrossfade:(UIView *)from {
+    NSArray<NSNumber *> *vals = VGMusicPlayer.crossfadeChoices;
+    NSMutableArray *names = [NSMutableArray array];
+    for (NSNumber *v in vals) [names addObject:[VGMusicPlayer nameForCrossfade:v.integerValue]];
+    NSInteger sel = [vals indexOfObject:@(VGMusicPlayer.crossfade)];
+    [self pickFrom:from title:@"Crossfade" names:names selected:sel == NSNotFound ? 0 : sel done:^(NSInteger i) { VGMusicPlayer.crossfade = vals[i].integerValue; }];
+}
 
 - (void)chooseThreads:(UIView *)from {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Connections per download"

@@ -20,7 +20,7 @@ static NSArray<NSString *> *presetColors(void) {
     VGFolderEditorViewController *vc = [[VGFolderEditorViewController alloc] initWithFolder:folder];
     vc.onSave = onSave;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    nav.overrideUserInterfaceStyle = VGInterfaceStyle;
     nav.navigationBar.tintColor = VGAccent;
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     UISheetPresentationController *sp = nav.sheetPresentationController;

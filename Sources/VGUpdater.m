@@ -118,7 +118,7 @@ static NSString *clean(NSString *tag) {
     UIViewController *vc = [UIViewController new];
     // A card in the middle of the screen over a dimmed background.
     vc.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.6];
-    vc.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    vc.overrideUserInterfaceStyle = VGInterfaceStyle;
     vc.modalPresentationStyle = UIModalPresentationOverFullScreen;
     vc.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
 
