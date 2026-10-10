@@ -30,6 +30,8 @@
 #define N_ALIVE  "com.t4mag0.vidgrab.hud.alive"
 #define N_HUDPID "com.t4mag0.vidgrab.hud.hudpid"
 #define N_DIAG   "com.t4mag0.vidgrab.hud.diag"
+#define N_THEME  "com.t4mag0.vidgrab.hud.theme"    // bit 63 set, bits 0-23 accent, 24-47 bubble color
+#define N_THEME2 "com.t4mag0.vidgrab.hud.theme2"   // bits 0-23 ring/border, 24-47 background
 
 static BOOL gDaemon;        // started by the jailbreak at boot, stays running and hides when idle
 static pid_t gAppPid;       // spawn mode: the VidGrab that started us
@@ -61,9 +63,23 @@ static void WriteState(const char *name, uint64_t v) {
     notify_post(name);
 }
 
+static UIColor *Hex(unsigned h, CGFloat a);
+// The colors of VidGrab's chosen theme (pink until the app tells us otherwise).
+static UIColor *gTA, *gTB, *gTS, *gTG;
+static UIColor *Rgb24(uint64_t v) { return Hex((unsigned)(v & 0xFFFFFF), 1); }
+static UIColor *TAccent(void) { return gTA ?: Hex(0xFF3D68, 1); }
+static UIColor *TBubble(void) { return gTB ?: Hex(0x1F1F27, 1); }
+static UIColor *TStroke(void) { return gTS ?: Hex(0x2A2A34, 1); }
+static UIColor *TBg(void) { return gTG ?: Hex(0x0A0A0D, 1); }
+static void LoadTheme(void) {
+    uint64_t a = ReadState(N_THEME), b = ReadState(N_THEME2);
+    if (!(a >> 63)) return;
+    gTA = Rgb24(a); gTB = Rgb24(a >> 24); gTS = Rgb24(b); gTG = Rgb24(b >> 24);
+}
+
 // What the bubble has done so far, for Settings > Test bubble: window id, how many times it was shown, last count it saw.
 static uint32_t gCtxId;
-static unsigned gAppears, gLastN, gRegs;
+static unsigned gAppears, gLastN;
 static void WriteDiag(void) {
     WriteState(N_DIAG, (1ULL << 63) | (uint64_t)gCtxId | ((uint64_t)MIN(gAppears, 255u) << 32) | ((uint64_t)MIN(gLastN, 255u) << 40));
 }
@@ -140,11 +156,11 @@ static void HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service
 
 static const CGFloat kSize = 60;
 
-// Tell SpringBoard to show our window above everything. Done again every few seconds while the bubble
-// is up, because SpringBoard forgets it after a respring or if it was not ready when the service started.
+// Tell SpringBoard to show our window above everything. Done exactly once per process: registering again
+// makes SpringBoard draw extra copies of the window (the bubble's shadow piles up into a big black patch).
 static id gHosting;
 static void RegisterHostedWindow(UIWindow *w) {
-    if (!w) return;
+    if (!w || gHosting) return;
     Class c = objc_getClass("SBSAccessibilityWindowHostingController");
     if (!c) return;
     gHosting = [[c alloc] init];
@@ -161,7 +177,7 @@ static void RegisterHostedWindow(UIWindow *w) {
 
 @interface VGHUDController : UIViewController
 @property (nonatomic, strong) UIView *bubble;
-@property (nonatomic, strong) CAShapeLayer *arc;
+@property (nonatomic, strong) CAShapeLayer *arc, *track;
 @property (nonatomic, strong) UILabel *percent, *badge;
 @property (nonatomic, strong) UIImageView *icon;
 @property (nonatomic) BOOL finishing, active;
@@ -179,33 +195,34 @@ static void RegisterHostedWindow(UIWindow *w) {
     self.view.backgroundColor = UIColor.clearColor;
 
     UIView *b = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kSize, kSize)];
-    b.backgroundColor = Hex(0x1F1F27, 0.96);
+    LoadTheme();
+    b.backgroundColor = [TBubble() colorWithAlphaComponent:0.96];
     b.layer.cornerRadius = kSize / 2;
-    b.layer.borderColor = Hex(0x2A2A34, 1).CGColor;
+    b.layer.borderColor = TStroke().CGColor;
     b.layer.borderWidth = 1;
     b.layer.shadowColor = UIColor.blackColor.CGColor;
-    b.layer.shadowOpacity = 0.55;
-    b.layer.shadowRadius = 14;
-    b.layer.shadowOffset = CGSizeMake(0, 5);
+    b.layer.shadowOpacity = 0.22;
+    b.layer.shadowRadius = 6;
+    b.layer.shadowOffset = CGSizeMake(0, 2);
     [self.view addSubview:b];
     self.bubble = b;
     ((VGHUDRootView *)self.view).bubble = b;
 
     UIBezierPath *path = [UIBezierPath bezierPathWithArcCenter:CGPointMake(kSize / 2, kSize / 2) radius:kSize / 2 - 6
                                                     startAngle:-M_PI_2 endAngle:M_PI * 1.5 clockwise:YES];
-    CAShapeLayer *track = [CAShapeLayer layer];
+    CAShapeLayer *track = [CAShapeLayer layer]; self.track = track;
     track.path = path.CGPath; track.fillColor = UIColor.clearColor.CGColor;
-    track.strokeColor = Hex(0x2A2A34, 1).CGColor; track.lineWidth = 4;
+    track.strokeColor = TStroke().CGColor; track.lineWidth = 4;
     self.arc = [CAShapeLayer layer];
     self.arc.path = path.CGPath; self.arc.fillColor = UIColor.clearColor.CGColor;
-    self.arc.strokeColor = Hex(0xFF3D68, 1).CGColor; self.arc.lineWidth = 4;
+    self.arc.strokeColor = TAccent().CGColor; self.arc.lineWidth = 4;
     self.arc.lineCap = kCALineCapRound; self.arc.strokeEnd = 0.02;
     [b.layer addSublayer:track];
     [b.layer addSublayer:self.arc];
 
     self.icon = [[UIImageView alloc] initWithFrame:CGRectMake(0, 13, kSize, 12)];
     self.icon.image = [UIImage systemImageNamed:@"arrow.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:10 weight:UIImageSymbolWeightHeavy]];
-    self.icon.tintColor = Hex(0xFF3D68, 1);
+    self.icon.tintColor = TAccent();
     self.icon.contentMode = UIViewContentModeCenter;
     [b addSubview:self.icon];
 
@@ -220,10 +237,10 @@ static void RegisterHostedWindow(UIWindow *w) {
     self.badge = [[UILabel alloc] initWithFrame:CGRectMake(kSize - 16, -5, 22, 22)];
     self.badge.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightHeavy];
     self.badge.textColor = UIColor.whiteColor;
-    self.badge.backgroundColor = Hex(0xFF3D68, 1);
+    self.badge.backgroundColor = TAccent();
     self.badge.textAlignment = NSTextAlignmentCenter;
     self.badge.layer.cornerRadius = 11;
-    self.badge.layer.borderColor = Hex(0x0A0A0D, 1).CGColor;
+    self.badge.layer.borderColor = TBg().CGColor;
     self.badge.layer.borderWidth = 2;
     self.badge.clipsToBounds = YES;
     self.badge.hidden = YES;
@@ -345,26 +362,18 @@ static void RegisterHostedWindow(UIWindow *w) {
     self.active = YES;
     gAppears++; WriteDiag();
     self.finishing = NO;
-    self.arc.strokeColor = Hex(0xFF3D68, 1).CGColor;
+    [self applyTheme];
+    self.arc.strokeColor = TAccent().CGColor;
     self.icon.frame = CGRectMake(0, 13, kSize, 12);
     self.icon.image = [UIImage systemImageNamed:@"arrow.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:10 weight:UIImageSymbolWeightHeavy]];
-    self.icon.tintColor = Hex(0xFF3D68, 1);
+    self.icon.tintColor = TAccent();
     [self place:NO];
     self.bubble.hidden = NO;
     self.bubble.transform = CGAffineTransformMakeScale(0.6, 0.6);
     [UIView animateWithDuration:0.4 delay:0 usingSpringWithDamping:0.65 initialSpringVelocity:0.6 options:0
                      animations:^{ self.bubble.alpha = 1; self.bubble.transform = CGAffineTransformIdentity; } completion:nil];
     [self scheduleDim];
-    [self reregister];
     HUDLog(@"bubble shown");
-}
-
-- (void)reregister {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(reregister) object:nil];
-    if (!self.active) return;
-    RegisterHostedWindow(self.view.window);
-    gRegs++; WriteDiag();
-    [self performSelector:@selector(reregister) withObject:nil afterDelay:(gRegs < 4 ? 0.7 : 5.0)];
 }
 
 - (void)hide {
@@ -393,7 +402,18 @@ static void RegisterHostedWindow(UIWindow *w) {
 
 #pragma mark Content
 
+- (void)applyTheme {
+    LoadTheme();
+    self.bubble.backgroundColor = [TBubble() colorWithAlphaComponent:0.96];
+    self.bubble.layer.borderColor = TStroke().CGColor;
+    self.track.strokeColor = TStroke().CGColor;
+    self.badge.backgroundColor = TAccent();
+    self.badge.layer.borderColor = TBg().CGColor;
+    if (!self.finishing) { self.arc.strokeColor = TAccent().CGColor; self.icon.tintColor = TAccent(); }
+}
+
 - (void)reload {
+    [self applyTheme];
     uint64_t v = ReadState(N_STATE);
     NSInteger n = (NSInteger)(v & 0xFFFF);
     if ((unsigned)n != gLastN) { gLastN = (unsigned)n; WriteDiag(); }
@@ -485,6 +505,16 @@ int main(int argc, char *argv[]) {
         UIApplicationInstantiateSingleton(objc_getClass("HUDMainApplication"));
         static id<UIApplicationDelegate> delegate = [VGHUDDelegate new];
         [UIApplication.sharedApplication setDelegate:delegate];
+        if (gDaemon) {
+            // After a respring SpringBoard forgets our window. Quit, and the jailbreak starts a fresh copy that registers again.
+            static int sbToken;
+            static time_t startedAt = time(NULL);
+            notify_register_dispatch("com.apple.springboard.finishedstartup", &sbToken, dispatch_get_main_queue(), ^(int t) {
+                if (time(NULL) - startedAt < 6) return;   // never quit in a loop
+                HUDLog(@"SpringBoard restarted; restarting the bubble service");
+                exit(0);
+            });
+        }
         HUDLog(@"app ready");
         [UIApplication.sharedApplication _accessibilityInit];
         [NSRunLoop currentRunLoop];
