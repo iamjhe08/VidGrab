@@ -1,5 +1,6 @@
 #import "VGOverlay.h"
 #import "VGEngine.h"
+#import "VGTheme.h"
 #import <UIKit/UIKit.h>
 #import <notify.h>
 #import <objc/message.h>
@@ -12,6 +13,8 @@
 // On TrollStore, VidGrab starts it when you leave the app with downloads running.
 #define N_STATE  "com.t4mag0.vidgrab.hud.state"
 #define N_UPDATE "com.t4mag0.vidgrab.hud.update"
+#define N_THEME  "com.t4mag0.vidgrab.hud.theme"
+#define N_THEME2 "com.t4mag0.vidgrab.hud.theme2"
 #define N_HIDE   "com.t4mag0.vidgrab.hud.exit"
 #define N_PID    "com.t4mag0.vidgrab.hud.pid"
 #define N_ALIVE  "com.t4mag0.vidgrab.hud.alive"
@@ -35,7 +38,20 @@ static int Token(const char *name) {
 static void SetState(const char *name, uint64_t v) { notify_set_state(Token(name), v); }
 static uint64_t GetState(const char *name) { uint64_t v = 0; notify_get_state(Token(name), &v); return v; }
 
+static uint64_t Rgb24(UIColor *c) {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [c getRed:&r green:&g blue:&b alpha:&a];
+    return ((uint64_t)lround(r * 255) << 16) | ((uint64_t)lround(g * 255) << 8) | (uint64_t)lround(b * 255);
+}
+
 @implementation VGOverlay
+
+/// Gives the bubble service the colors of the chosen theme.
++ (void)pushTheme {
+    VGPalette *p = VGPalette.current;
+    SetState(N_THEME, (1ULL << 63) | Rgb24(p.accent) | (Rgb24(p.surface2) << 24));
+    SetState(N_THEME2, Rgb24(p.stroke) | (Rgb24(p.background) << 24));
+}
 
 + (BOOL)enabled {
     if (!self.bubbleAllowed) return NO;
@@ -129,6 +145,11 @@ static UIDocumentInteractionController *gDoc;
 
 + (void)start {
     SetState(N_PID, (uint64_t)getpid());
+    [self pushTheme];
+    [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        [self pushTheme];
+        if ([self serviceAlive]) notify_post(N_UPDATE);
+    }];
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     NSOperationQueue *main = NSOperationQueue.mainQueue;
     [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:main usingBlock:^(NSNotification *n) {
@@ -206,6 +227,7 @@ static NSDate *gLastLaunch;
 + (void)writeState {
     VGEngine *e = [VGEngine shared];
     VGTask *lead = e.leadTask;
+    [self pushTheme];
     SetState(N_STATE, [self packCount:e.activeCount fraction:lead ? lead.fraction : 0 waiting:lead.state == VGTaskQueued
                                 saved:gSaved failed:gFailed sample:NO]);
 }

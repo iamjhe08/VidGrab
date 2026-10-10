@@ -26,8 +26,14 @@
 - (void)applyAppearance {
     UITabBarAppearance *tab = [UITabBarAppearance new];
     [tab configureWithOpaqueBackground];
-    tab.backgroundColor = VGHex(0x0D0D11);
+    tab.backgroundColor = VGTabBarBg;
     tab.shadowColor = VGStroke;
+    if (VGPalette.current.glass) {   // glass theme: see-through bars with a blur
+        [tab configureWithTransparentBackground];
+        tab.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
+        tab.backgroundColor = [VGTabBarBg colorWithAlphaComponent:0.50];
+        tab.shadowColor = [UIColor colorWithWhite:1 alpha:0.12];
+    }
     UITabBarItemAppearance *item = [UITabBarItemAppearance new];
     item.normal.iconColor = VGTertiary;
     item.normal.titleTextAttributes = @{NSForegroundColorAttributeName: VGTertiary, NSFontAttributeName: VGFont(10, UIFontWeightSemibold)};
@@ -43,6 +49,12 @@
     [nav configureWithOpaqueBackground];
     nav.backgroundColor = VGBackground;
     nav.shadowColor = UIColor.clearColor;
+    if (VGPalette.current.glass) {
+        [nav configureWithTransparentBackground];
+        nav.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
+        nav.backgroundColor = [VGBackground colorWithAlphaComponent:0.55];
+        nav.shadowColor = [UIColor colorWithWhite:1 alpha:0.08];
+    }
     nav.titleTextAttributes = @{NSForegroundColorAttributeName: VGText, NSFontAttributeName: VGFont(17, UIFontWeightBold)};
     nav.largeTitleTextAttributes = @{NSForegroundColorAttributeName: VGText, NSFontAttributeName: VGFont(32, UIFontWeightHeavy)};
     UINavigationBar.appearance.standardAppearance = nav;
@@ -51,18 +63,7 @@
     UINavigationBar.appearance.tintColor = VGAccent;
 }
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    [VGCrash install];
-    // If the last run ended badly while preparing the ad blocker, turn it off so the app can open.
-    if ([[VGCrash previousLastStep] hasPrefix:@"adblock"]) [VGBlocker shared].enabled = NO;
-    [VGCrash breadcrumb:@"launch"];
-    if (VGCache.autoClearOnLaunch) [VGCache clear:nil];   // Settings > Auto-clear cache on launch
-    [[VGEngine shared] start];
-    [VGKeepAlive start];
-    [VGOverlay start];
-    // The ad blocker gets ready when Browse is first opened, not at launch.
-    [self applyAppearance];
-
+- (void)buildTabs {
     self.home = [VGHomeViewController new];
     UINavigationController *homeNav = [[UINavigationController alloc] initWithRootViewController:self.home];
     homeNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:[UIImage systemImageNamed:@"house"]
@@ -85,7 +86,40 @@
     self.tabs = [UITabBarController new];
     self.tabs.viewControllers = @[homeNav, browseNav, libNav, dlNav];
     self.tabs.tabBar.tintColor = VGText;
+}
 
+- (void)rebuildForTheme {
+    // The mini video player lives on top of the tab bar; to be safe, a theme picked while it is open applies next launch.
+    extern BOOL VGPlayerIsActive(void);
+    if (VGPlayerIsActive()) return;
+    NSInteger sel = self.tabs.selectedIndex;
+    [self.pill removeFromSuperview];
+    [self applyAppearance];
+    [self buildTabs];
+    self.tabs.selectedIndex = MIN(sel, (NSInteger)self.tabs.viewControllers.count - 1);
+    self.tabs.delegate = self;
+    self.window.backgroundColor = VGBackground;
+    self.window.tintColor = VGAccent;
+    [UIView transitionWithView:self.window duration:0.25 options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:^{ self.window.rootViewController = self.tabs; } completion:nil];
+    self.pill = [VGProgressPill new];
+    [self.pill addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
+    [self.tabs.view addSubview:self.pill];
+}
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    [VGCrash install];
+    // If the last run ended badly while preparing the ad blocker, turn it off so the app can open.
+    if ([[VGCrash previousLastStep] hasPrefix:@"adblock"]) [VGBlocker shared].enabled = NO;
+    [VGCrash breadcrumb:@"launch"];
+    if (VGCache.autoClearOnLaunch) [VGCache clear:nil];   // Settings > Auto-clear cache on launch
+    [[VGEngine shared] start];
+    [VGKeepAlive start];
+    [VGOverlay start];
+    // The ad blocker gets ready when Browse is first opened, not at launch.
+    [self applyAppearance];
+
+    [self buildTabs];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.window.backgroundColor = VGBackground;
@@ -114,6 +148,8 @@
                                                 usingBlock:^(NSNotification *n) {
         self.pill.suppressed = [n.object boolValue] || self.tabs.selectedIndex == 1;
     }];
+    [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) { [self rebuildForTheme]; }];
     [VGCrash breadcrumb:@"window ready"];
     return YES;
 }

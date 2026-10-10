@@ -20,6 +20,7 @@ static NSDictionary<NSString *, NSString *> *Known(void) {
         @"vgFinishSound":      @"Sound when done",
         @"vgThreads":          @"Connections per download",
         @"vgFilesOnly":        @"Files only",
+        @"vgTheme":            @"Theme",
         @"vgBubbleSide":       @"Bubble position",
         @"vgBubbleY":          @"Bubble position",
         @"vgGestureLevels":     @"Player brightness and volume swipe",

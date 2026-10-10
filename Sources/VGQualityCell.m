@@ -68,7 +68,7 @@
     self.fmtLabel.text = o.audio ? o.format : (o.convert ? @"MP4 · CONVERTS" : (o.photos ? [o.format stringByAppendingString:@" · PHOTOS"] : [o.format stringByAppendingString:@" · FILES ONLY"]));
     self.check.hidden = !selected;
     self.contentView.layer.borderColor = selected ? VGAccent.CGColor : UIColor.clearColor.CGColor;
-    self.contentView.backgroundColor = selected ? VGHex(0x26232C) : VGSurface2;
+    self.contentView.backgroundColor = selected ? VGSelectedBg : VGSurface2;
 }
 
 @end

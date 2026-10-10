@@ -735,7 +735,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
-        self.backgroundColor = VGHex(0x0A0A0D);
+        self.backgroundColor = VGBackground;
         self.userInteractionEnabled = NO;
         _glow = [CAGradientLayer layer];
         _glow.type = kCAGradientLayerRadial;
@@ -745,7 +745,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         _glow.endPoint = CGPointMake(1.0, 1.0);
         [self.layer addSublayer:_glow];
 
-        UIImage *icon = [UIImage imageNamed:@"AppIcon60x60"] ?: [UIImage imageNamed:@"AppIcon60x60@3x"];
+        UIImage *icon = VGThemedIcon();
         UIImageView *pic = [[UIImageView alloc] initWithImage:icon];
         pic.contentMode = UIViewContentModeScaleAspectFill;
         pic.clipsToBounds = YES;

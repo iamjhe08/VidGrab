@@ -1371,7 +1371,7 @@ NSString *const VGSelectModeDidChangeNotification = @"VGSelectModeDidChange";
             done(YES);
         }];
         edit.image = [UIImage systemImageNamed:@"paintpalette.fill"];
-        edit.backgroundColor = VGHex(0x3A3A46);
+        edit.backgroundColor = VGEditBg;
         return [UISwipeActionsConfiguration configurationWithActions:@[del, edit]];
     }
     if (ip.section == kSecTasks) {

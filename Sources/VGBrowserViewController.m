@@ -19,7 +19,7 @@ static NSString *const kOverlayJS = @""
 "btn.innerHTML = '<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#fff\" stroke-width=\"2.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4v11\"/><path d=\"M7 10l5 5 5-5\"/><path d=\"M5 20h14\"/></svg><span style=\"margin-left:6px\">Download</span>';\n"
 "var st = btn.style;\n"
 "st.position='fixed'; st.zIndex='2147483647'; st.display='none'; st.alignItems='center';\n"
-"st.padding='8px 13px 8px 11px'; st.borderRadius='20px'; st.background='rgba(255,61,104,0.96)';\n"
+"st.padding='8px 13px 8px 11px'; st.borderRadius='20px'; st.background='__VG_ACCENT__';\n"
 "st.color='#fff'; st.font='700 13px -apple-system, system-ui, sans-serif'; st.letterSpacing='0.2px';\n"
 "st.boxShadow='0 4px 16px rgba(0,0,0,.5)'; st.webkitUserSelect='none'; st.userSelect='none';\n"
 "st.webkitTapHighlightColor='transparent'; st.cursor='pointer';\n"
@@ -236,7 +236,7 @@ static NSString *const kOverlayJS = @""
         NSString *poly = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"polyfills" ofType:@"js"] encoding:NSUTF8StringEncoding error:nil];
         if (poly.length) [ucc addUserScript:[[WKUserScript alloc] initWithSource:poly injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
     }
-    [ucc addUserScript:[[WKUserScript alloc] initWithSource:kOverlayJS injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:NO]];
+    [ucc addUserScript:[[WKUserScript alloc] initWithSource:[kOverlayJS stringByReplacingOccurrencesOfString:@"__VG_ACCENT__" withString:VGAccentCSS()] injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:NO]];
     // Notes the streams a page asks for while it plays, for sites that only show their video once it plays.
     NSString *sniff = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"sniffer" ofType:@"js"] encoding:NSUTF8StringEncoding error:nil];
     if (sniff.length) [ucc addUserScript:[[WKUserScript alloc] initWithSource:sniff injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];

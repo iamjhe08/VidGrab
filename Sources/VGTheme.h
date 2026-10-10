@@ -4,15 +4,35 @@
 static inline UIColor *VGHex(unsigned int h) {
     return [UIColor colorWithRed:((h >> 16) & 0xFF) / 255.0 green:((h >> 8) & 0xFF) / 255.0 blue:(h & 0xFF) / 255.0 alpha:1];
 }
-#define VGBackground  VGHex(0x0A0A0D)
-#define VGSurface     VGHex(0x15151B)
-#define VGSurface2    VGHex(0x1F1F27)
-#define VGStroke      VGHex(0x2A2A34)
-#define VGText        UIColor.whiteColor
-#define VGSecondary   VGHex(0xA3A3AE)
-#define VGTertiary    VGHex(0x6C6C78)
-#define VGAccent      VGHex(0xFF3D68)
-#define VGAccent2     VGHex(0xD9338F)
+/// The colors of the chosen theme. Default is VidGrab's own look; the others take their feel from well-known apps.
+@interface VGPalette : NSObject
+@property (nonatomic, readonly) UIColor *background, *surface, *surface2, *stroke, *text, *secondary, *tertiary;
+@property (nonatomic, readonly) UIColor *accent, *accent2, *accentSoft, *tabBar, *listBackground, *selectedCell, *editButton;
+@property (nonatomic, readonly) NSString *title, *detail;
+/// Futuristic glass look: see-through bars with a blur.
+@property (nonatomic, readonly) BOOL glass;
++ (VGPalette *)current;
++ (NSArray<VGPalette *> *)all;
+/// Index of the saved theme (0 = Default).
++ (NSInteger)selectedIndex;
++ (void)selectIndex:(NSInteger)index;
+@end
+extern NSString *const VGThemeDidChangeNotification;
+
+#define VGBackground  ([VGPalette current].background)
+#define VGSurface     ([VGPalette current].surface)
+#define VGSurface2    ([VGPalette current].surface2)
+#define VGStroke      ([VGPalette current].stroke)
+#define VGText        ([VGPalette current].text)
+#define VGSecondary   ([VGPalette current].secondary)
+#define VGTertiary    ([VGPalette current].tertiary)
+#define VGAccent      ([VGPalette current].accent)
+#define VGAccent2     ([VGPalette current].accent2)
+#define VGAccentSoft  ([VGPalette current].accentSoft)
+#define VGTabBarBg    ([VGPalette current].tabBar)
+#define VGListBg      ([VGPalette current].listBackground)
+#define VGSelectedBg  ([VGPalette current].selectedCell)
+#define VGEditBg      ([VGPalette current].editButton)
 
 static inline UIFont *VGFont(CGFloat size, UIFontWeight weight) {
     return [UIFont systemFontOfSize:size weight:weight];
@@ -48,3 +68,8 @@ UILabel *VGWordmark(CGFloat size);
 /// Primary (white, dark text) and secondary (dark, white text) buttons.
 UIButton *VGPrimaryButton(NSString *title, NSString *icon);
 UIButton *VGSecondaryButton(NSString *title, NSString *icon);
+
+/// VidGrab's app icon with its colors turned to match the chosen theme (the original for Default).
+UIImage *VGThemedIcon(void);
+/// The accent as a CSS color for web pages, e.g. "rgba(255,61,104,0.96)".
+NSString *VGAccentCSS(void);

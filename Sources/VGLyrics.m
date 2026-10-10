@@ -127,7 +127,7 @@ static NSString *CleanArtist(NSString *a) {
 
 + (void)getJSON:(NSString *)url done:(void (^)(id json))done {
     NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12];
-    [rq setValue:@"VidGrab 1.3.4 (https://github.com/iamjhe08/VidGrab)" forHTTPHeaderField:@"User-Agent"];
+    [rq setValue:@"VidGrab 1.3.4a (https://github.com/iamjhe08/VidGrab)" forHTTPHeaderField:@"User-Agent"];
     [[NSURLSession.sharedSession dataTaskWithRequest:rq completionHandler:^(NSData *d, NSURLResponse *resp, NSError *e) {
         id j = nil;
         if (d && !e && [(NSHTTPURLResponse *)resp statusCode] == 200) j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];

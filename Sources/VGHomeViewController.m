@@ -159,7 +159,12 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     gear.tintColor = VGText;
     gear.accessibilityLabel = @"Settings";
     [gear addTarget:self action:@selector(openSettings) forControlEvents:UIControlEventTouchUpInside];
-    for (UIView *v in @[mark, gear]) { v.translatesAutoresizingMaskIntoConstraints = NO; [header addSubview:v]; }
+    UIButton *themeB = [UIButton buttonWithType:UIButtonTypeSystem];
+    [themeB setImage:[UIImage systemImageNamed:@"paintpalette.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    themeB.tintColor = VGText;
+    themeB.accessibilityLabel = @"Theme";
+    [themeB addTarget:self action:@selector(chooseTheme:) forControlEvents:UIControlEventTouchUpInside];
+    for (UIView *v in @[mark, themeB, gear]) { v.translatesAutoresizingMaskIntoConstraints = NO; [header addSubview:v]; }
 
     self.scroll = [UIScrollView new];
     self.scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -185,6 +190,10 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         [gear.centerYAnchor constraintEqualToAnchor:mark.centerYAnchor],
         [gear.widthAnchor constraintEqualToConstant:44],
         [gear.heightAnchor constraintEqualToConstant:44],
+        [themeB.trailingAnchor constraintEqualToAnchor:gear.leadingAnchor constant:-2],
+        [themeB.centerYAnchor constraintEqualToAnchor:gear.centerYAnchor],
+        [themeB.widthAnchor constraintEqualToConstant:44],
+        [themeB.heightAnchor constraintEqualToConstant:44],
 
         [self.scroll.topAnchor constraintEqualToAnchor:header.bottomAnchor],
         [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -280,7 +289,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 }
 
 - (void)buildClipBanner {
-    UILabel *tag = [self label:VGFont(12, UIFontWeightHeavy) color:VGHex(0xFF8FA6) lines:1];
+    UILabel *tag = [self label:VGFont(12, UIFontWeightHeavy) color:VGAccentSoft lines:1];
     tag.attributedText = [[NSAttributedString alloc] initWithString:@"FOUND ON YOUR CLIPBOARD" attributes:@{NSKernAttributeName: @1.4}];
     self.clipTitle = [self label:VGFont(30, UIFontWeightHeavy) color:VGText lines:0];
     self.clipTitle.text = @"Ready when you are.";
@@ -595,6 +604,25 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         }];
     }];
     return [UIMenu menuWithTitle:@"Settings" children:@[cache, [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[update, about]]]];
+}
+
+/// Theme picker: Default, SP, SC, FL, PR.
+- (void)chooseTheme:(UIButton *)from {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Theme" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<VGPalette *> *all = VGPalette.all;
+    for (NSInteger i = 0; i < (NSInteger)all.count; i++) {
+        NSString *name = all[i].title;
+        if (i == VGPalette.selectedIndex) name = [name stringByAppendingString:@"  \u2713"];
+        [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            if (i == VGPalette.selectedIndex) return;
+            [VGPalette selectIndex:i];
+            [NSNotificationCenter.defaultCenter postNotificationName:VGThemeDidChangeNotification object:nil];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = from;
+    a.popoverPresentationController.sourceRect = from.bounds;
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)openSettings {
@@ -1003,7 +1031,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
     self.playlistAll = [UIButton buttonWithType:UIButtonTypeSystem];
     self.playlistAll.titleLabel.font = VGFont(14, UIFontWeightBold);
-    self.playlistAll.tintColor = VGHex(0xFF8FA6);
+    self.playlistAll.tintColor = VGAccentSoft;
     [self.playlistAll addTarget:self action:@selector(toggleAllPicked) forControlEvents:UIControlEventTouchUpInside];
     UIView *spacer = [UIView new];
     UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[self.playlistMeta, spacer, self.playlistAll]];
@@ -1012,12 +1040,12 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     self.playlistRows = [self vstack:@[] spacing:2];
     self.playlistMore = [UIButton buttonWithType:UIButtonTypeSystem];
     self.playlistMore.titleLabel.font = VGFont(14, UIFontWeightBold);
-    self.playlistMore.tintColor = VGHex(0xFF8FA6);
+    self.playlistMore.tintColor = VGAccentSoft;
     [self.playlistMore.heightAnchor constraintEqualToConstant:44].active = YES;
     [self.playlistMore addTarget:self action:@selector(showAllPlaylistRows) forControlEvents:UIControlEventTouchUpInside];
     UIStackView *listInner = [self vstack:@[self.playlistRows, self.playlistMore] spacing:0];
     UIView *list = [UIView new];
-    list.backgroundColor = VGHex(0x0F0F14);
+    list.backgroundColor = VGListBg;
     list.layer.cornerRadius = 14;
     listInner.translatesAutoresizingMaskIntoConstraints = NO;
     [list addSubview:listInner];
@@ -1463,7 +1491,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     UIButton *all = [UIButton buttonWithType:UIButtonTypeSystem];
     [all setTitle:@"See all" forState:UIControlStateNormal];
     all.titleLabel.font = VGFont(14, UIFontWeightBold);
-    all.tintColor = VGHex(0xFF8FA6);
+    all.tintColor = VGAccentSoft;
     [all addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
     UIView *sp = [UIView new];
     UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[h, sp, all]];

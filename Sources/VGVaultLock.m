@@ -393,7 +393,7 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
     self.forgotButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.forgotButton setTitle:@"Forgot passcode?" forState:UIControlStateNormal];
     self.forgotButton.titleLabel.font = VGFont(15, UIFontWeightSemibold);
-    self.forgotButton.tintColor = VGHex(0xFF8FA6);
+    self.forgotButton.tintColor = VGAccentSoft;
     self.forgotButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.forgotButton addTarget:self action:@selector(forgotTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.forgotButton];
