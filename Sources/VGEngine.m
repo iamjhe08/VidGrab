@@ -513,11 +513,11 @@ static NSString *cleanFolderName(NSString *name) {
 
 + (VGOption *)presetOption:(NSString *)quality {
     VGOption *o = [VGOption new];
-    BOOL mp3 = [quality isEqualToString:@"mp3"];
+    BOOL mp3 = [@[@"mp3", @"m4a", @"wav", @"flac"] containsObject:quality];   // the audio choices
     o.identifier = [@"q:" stringByAppendingString:quality];
-    o.res = mp3 ? @"MP3" : ([quality isEqualToString:@"best"] ? @"Best" : [quality stringByAppendingString:@"p"]);
+    o.res = mp3 ? quality.uppercaseString : ([quality isEqualToString:@"best"] ? @"Best" : [quality stringByAppendingString:@"p"]);
     o.sizeText = @"";
-    o.format = mp3 ? @"MP3" : @"MP4";
+    o.format = mp3 ? quality.uppercaseString : @"MP4";
     o.photos = !mp3;
     o.audio = mp3;
     o.convert = NO;
@@ -991,6 +991,12 @@ static NSString *resumeFile(void) { return [resumeRoot() stringByAppendingPathCo
                 return;
             }
             if (!r) { [ws finish:task item:nil error:error work:work]; return; }
+            if (video.options.count == 0) {   // a playlist entry only had a quick preview: use the real details of the file
+                if ([r[@"title"] isKindOfClass:NSString.class] && [r[@"title"] length]) video.title = r[@"title"];
+                if ([r[@"uploader"] isKindOfClass:NSString.class] && [r[@"uploader"] length]) video.uploader = r[@"uploader"];
+                if ([r[@"thumbnail"] isKindOfClass:NSString.class] && [r[@"thumbnail"] length]) video.thumbnail = r[@"thumbnail"];
+                if ([r[@"duration"] isKindOfClass:NSNumber.class] && [r[@"duration"] doubleValue] > 0) video.duration = [r[@"duration"] doubleValue];
+            }
             [ws postProcess:task result:r work:work share:share];
         }];
     }];

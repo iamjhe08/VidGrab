@@ -1,4 +1,5 @@
 #import "VGHomeViewController.h"
+#import "VGShareBridge.h"
 #import "VGDownloadDefaults.h"
 #import "VGPlaylistStore.h"
 #import "VGSavedPlaylistsViewController.h"
@@ -54,6 +55,7 @@ typedef NS_ENUM(NSInteger, VGStep) { VGStepWelcome, VGStepLoaded, VGStepDownload
 @property (nonatomic, strong) UIView *clipBanner;
 @property (nonatomic, strong) UILabel *clipTitle;
 @property (nonatomic) BOOL fromClipboard;
+@property (nonatomic) BOOL autoStartShared;
 @property (nonatomic, strong) UIButton *notThisButton;
 
 // Playlists
@@ -147,11 +149,11 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     [super viewDidLoad];
     [VGCrash breadcrumb:@"home screen"];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(openSavedNotification:) name:VGOpenSavedPlaylist object:nil];
-    self.view.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
 
     // Header
     UIView *header = [UIView new];
-    header.backgroundColor = VGBackground;
+    header.backgroundColor = (VGPalette.current.carbon ? UIColor.clearColor : VGBackground);
     header.translatesAutoresizingMaskIntoConstraints = NO;
     UILabel *mark = VGWordmark(26);
     UIButton *gear = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -265,6 +267,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     glow.gradient.startPoint = CGPointMake(0.85, 0.0);
     glow.gradient.endPoint = CGPointMake(-0.1, 1.2);
     glow.translatesAutoresizingMaskIntoConstraints = NO;
+    glow.hidden = VGPalette.current.flat;
     [hero addSubview:glow];
 
     UILabel *h1 = [self label:VGFont(38, UIFontWeightHeavy) color:VGText lines:0];
@@ -695,6 +698,12 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     [self loadLink:s];
 }
 
+- (void)loadSharedLink:(NSString *)link {
+    self.autoStartShared = VGDownloadDefaults.skipSheet && VGDownloadDefaults.autoStartShared;
+    if (self.autoStartShared && ![VGShareBridge claimLink:[self extractLink:link]]) { self.autoStartShared = NO; return; }   // the share bridge already started it
+    [self loadLink:link];
+}
+
 - (void)loadLink:(NSString *)link {
     self.field.text = [self extractLink:link];
     [self find];
@@ -713,6 +722,8 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     NSUInteger lookup = ++self.lookupID;
     [[VGEngine shared] fetch:url completion:^(VGVideo *video, NSString *error) {
         if (lookup != self.lookupID) return;  // cleared while looking up
+        BOOL autoStart = self.autoStartShared;   // only this lookup
+        self.autoStartShared = NO;
         [self setFinding:NO];
         if (video) self.task = nil;
         if (!video) {
@@ -728,6 +739,10 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
             return;
         }
         [self fillVideo];
+        if (autoStart && ![self streamMode]) {   // shared link and defaults are set: start right away
+            [self download];
+            return;
+        }
         [self setStep:VGStepLoaded animated:YES];
         [self.scroll setContentOffset:CGPointZero animated:YES];
     }];
@@ -1096,9 +1111,9 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     [self.playlistSave.heightAnchor constraintEqualToConstant:50].active = YES;
     [self.playlistSave addTarget:self action:@selector(savePlaylistTapped) forControlEvents:UIControlEventTouchUpInside];
     UILabel *note = [self label:VGFont(12, UIFontWeightMedium) color:VGTertiary lines:0];
-    note.text = @"Tick the videos you want. Download saves each one in the chosen quality (they show up in Downloads). Stream plays them one after another in VidGrab's player. Save playlist keeps the list (nothing is downloaded) so you can open it again from the playlist button at the top left of Library.";
+    note.text = @"Tick the videos you want. Download asks for a video quality or an audio format (MP3, M4A, WAV, FLAC) and saves every ticked one that way (they show up in Downloads). Stream plays them one after another in VidGrab's player. Save playlist keeps the list (nothing is downloaded) so you can open it again from the playlist button at the top left of Library.";
 
-    UIStackView *s = [self vstack:@[tag, self.playlistTitle, head, list, qrow, self.playlistDownload, self.playlistStream, self.playlistSave, note] spacing:12];
+    UIStackView *s = [self vstack:@[tag, self.playlistTitle, head, list, self.playlistDownload, self.playlistStream, self.playlistSave, note] spacing:12];
     [s setCustomSpacing:4 afterView:tag];
     [s setCustomSpacing:6 afterView:self.playlistTitle];
     UIView *card = [self card:s];
@@ -1445,9 +1460,27 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     }];
 }
 
+/// Download: first ask what to save them as (video quality or an audio format), then add them all.
 - (void)downloadPlaylist {
+    NSUInteger count = [self pickedCount];
+    if (!count) return;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:count == 1 ? @"Download 1 video" : [NSString stringWithFormat:@"Download %lu videos", (unsigned long)count]
+                                                               message:@"Choose one quality or format for all of them."
+                                                        preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray *choices = @[@[@"Video · Best", @"best"], @[@"Video · 1080p", @"1080"], @[@"Video · 720p", @"720"], @[@"Video · 480p", @"480"],
+                         @[@"Audio · MP3", @"mp3"], @[@"Audio · M4A", @"m4a"], @[@"Audio · WAV", @"wav"], @[@"Audio · FLAC", @"flac"]];
+    for (NSArray *c in choices) {
+        [a addAction:[UIAlertAction actionWithTitle:c[0] style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { [self downloadPlaylistAs:c[1]]; }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    a.popoverPresentationController.sourceView = self.playlistDownload;
+    a.popoverPresentationController.sourceRect = self.playlistDownload.bounds;
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)downloadPlaylistAs:(NSString *)quality {
     NSArray<VGVideo *> *entries = self.video.entries;
-    VGOption *opt = [VGEngine presetOption:self.playlistQuality ?: @"best"];
+    VGOption *opt = [VGEngine presetOption:quality ?: @"best"];
     NSUInteger n = 0;
     for (NSUInteger i = 0; i < entries.count && i < self.picked.count; i++) {
         if (![self.picked[i] boolValue]) continue;

@@ -15,6 +15,7 @@
 #import "VGActions.h"
 #import "VGSidebarController.h"
 #import "VGHaptics.h"
+#import "VGShareBridge.h"
 
 // The tab controller decides the status bar (clock, battery, Wi-Fi): dark icons on the white theme, light icons otherwise.
 @interface VGRootTabs : UITabBarController
@@ -59,6 +60,12 @@
     [nav configureWithOpaqueBackground];
     nav.backgroundColor = VGBackground;
     nav.shadowColor = UIColor.clearColor;
+    if (VGPalette.current.carbon) {
+        [nav configureWithTransparentBackground];
+        nav.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
+        nav.backgroundColor = [VGBackground colorWithAlphaComponent:0.45];
+        nav.shadowColor = UIColor.clearColor;
+    }
     if (VGPalette.current.glass) {
         [nav configureWithTransparentBackground];
         nav.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
@@ -128,7 +135,7 @@
 - (void)rebuildForTheme {
     NSInteger sel = self.tabs.selectedIndex;
     [self applyAppearance];
-    self.window.backgroundColor = VGBackground;
+    self.window.backgroundColor = VGScreen;
     self.window.tintColor = VGAccent;
     self.window.overrideUserInterfaceStyle = VGInterfaceStyle;
     self.tabs.viewControllers = [self buildNavs];
@@ -136,7 +143,7 @@
     self.tabs.tabBar.standardAppearance = UITabBar.appearance.standardAppearance;
     self.tabs.tabBar.scrollEdgeAppearance = UITabBar.appearance.scrollEdgeAppearance;
     self.tabs.tabBar.tintColor = VGText;
-    self.tabs.view.backgroundColor = VGBackground;
+    self.tabs.view.backgroundColor = VGScreen;
     UIViewController *root = self.window.rootViewController;
     if ([root isKindOfClass:VGSidebarController.class]) [(VGSidebarController *)root retheme];
     [self.tabs setNeedsStatusBarAppearanceUpdate];
@@ -154,6 +161,7 @@
     if (VGCache.autoClearOnLaunch) [VGCache clear:nil];   // Settings > Auto-clear cache on launch
     [[VGEngine shared] start];
     [VGKeepAlive start];
+    [VGShareBridge start];
     [VGOverlay start];
     // The ad blocker gets ready when Browse is first opened, not at launch.
     [self applyAppearance];
@@ -161,7 +169,7 @@
     [self buildTabs];
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.overrideUserInterfaceStyle = VGInterfaceStyle;
-    self.window.backgroundColor = VGBackground;
+    self.window.backgroundColor = VGScreen;
     self.window.tintColor = VGAccent;
     [self installRoot:NO];
     [self.window makeKeyAndVisible];
@@ -189,6 +197,12 @@
     }];
     [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(NSNotification *n) { [self rebuildForTheme]; }];
+    // A link that arrived while VidGrab was in the background and needed a choice waits until you open the app.
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) {
+        NSString *pending = [VGShareBridge takePendingLink];
+        if (pending) { self.tabs.selectedIndex = 0; [self.home loadSharedLink:pending]; }
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:VGLayoutDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(NSNotification *n) { [self layoutChanged]; }];
     [NSNotificationCenter.defaultCenter addObserverForName:VGTaskFinishedNotification object:nil queue:NSOperationQueue.mainQueue
@@ -236,7 +250,7 @@
     if (!link.length) return NO;
     self.tabs.selectedIndex = 0;
     self.pill.suppressed = NO;
-    [self.home loadLink:link];
+    [self.home loadSharedLink:link];
     return YES;
 }
 

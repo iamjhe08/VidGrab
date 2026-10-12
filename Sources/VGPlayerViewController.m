@@ -744,6 +744,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
         _glow.type = kCAGradientLayerRadial;
         _glow.colors = @[(id)[VGAccent colorWithAlphaComponent:0.34].CGColor, (id)[VGAccent2 colorWithAlphaComponent:0.10].CGColor, (id)UIColor.clearColor.CGColor];
         _glow.locations = @[@0, @0.45, @1];
+        _glow.hidden = VGPalette.current.flat;
         _glow.startPoint = CGPointMake(0.5, 0.46);
         _glow.endPoint = CGPointMake(1.0, 1.0);
         [self.layer addSublayer:_glow];

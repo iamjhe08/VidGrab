@@ -42,7 +42,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Settings";
-    self.tableView.backgroundColor = VGBackground;
+    self.tableView.backgroundColor = VGScreen;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
                                                                                            target:self action:@selector(done)];
     self.tableView.tableHeaderView = [self coffeeHeader];
@@ -125,7 +125,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     switch (section) {
         case VGSectionStorage: return 3;
         case VGSectionEngine: return 4;
-        case VGSectionDownloads: return 6;
+        case VGSectionDownloads: return 7;
         case VGSectionFloat: return 4;
         case VGSectionGestures: return 5;
         case VGSectionSubtitles: return 6;
@@ -194,7 +194,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     if (section == VGSectionAbout)
         return @"VidGrab checks for new versions every time you open it. Updates keep your downloads and settings.";
     if (section == VGSectionDownloads)
-        return [NSString stringWithFormat:@"%@\n\nConnections per download: how many pieces are fetched at once. It helps most with downloads that arrive in many small parts. Files only hides every Save to Photos button, so your downloads stay in VidGrab's folder in the Files app. Wi-Fi only makes new downloads wait while you are on mobile data or a hotspot; ones already running keep going. Ask to delete finished videos shows a question after a saved video plays to the end.", VGDownloadDefaults.skipSheet ? @"The Download card shows only a Start button and uses these choices. Switch to Stream on the card to see every quality. Set either one to Always ask to pick a quality every time. Playlists always ask." : @"Right now the Download card shows every quality. To get just a Start button, set Default type to Video and pick a Default quality, or set Default type to Audio only."];
+        return [NSString stringWithFormat:@"%@\n\nConnections per download: how many pieces are fetched at once. It helps most with downloads that arrive in many small parts. Files only hides every Save to Photos button, so your downloads stay in VidGrab's folder in the Files app. Wi-Fi only makes new downloads wait while you are on mobile data or a hotspot; ones already running keep going. Auto-start shared links makes Share > VidGrab start the download by itself when a default type and quality are set above; turn it off to always see the card with the quality list and Stream. Ask to delete finished videos shows a question after a saved video plays to the end.", VGDownloadDefaults.skipSheet ? @"The Download card shows only a Start button and uses these choices. Switch to Stream on the card to see every quality. Set either one to Always ask to pick a quality every time. Playlists always ask." : @"Right now the Download card shows every quality. To get just a Start button, set Default type to Video and pick a Default quality, or set Default type to Audio only."];
     if (section == VGSectionEngine)
         return @"With Find copied links on, a video link you copied shows up on Home as soon as you open VidGrab. With Keep downloading in background on, downloads carry on when you leave the app and you get a notification when they finish. If downloads from a site stop working, update the engine: sites change often and fixes arrive here first.";
     if (section == VGSectionFloat) {
@@ -282,6 +282,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
             sw.on = VGDownloadDefaults.filesOnly;
             sw.onTintColor = VGAccent;
             [sw addTarget:self action:@selector(filesOnlyChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        if (ip.row == 6) {
+            UITableViewCell *c = [self cellWithTitle:@"Auto-start shared links" value:nil icon:@"square.and.arrow.down" tint:nil];
+            UISwitch *sw = [UISwitch new];
+            sw.on = VGDownloadDefaults.autoStartShared;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:@selector(autoStartSharedChanged:) forControlEvents:UIControlEventValueChanged];
             c.accessoryView = sw;
             c.selectionStyle = UITableViewCellSelectionStyleNone;
             return c;
@@ -718,6 +728,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     VGDownloadDefaults.wifiOnly = sw.on;
     [[VGEngine shared] pump];   // turning it off lets waiting downloads start right away
 }
+- (void)autoStartSharedChanged:(UISwitch *)sw { VGDownloadDefaults.autoStartShared = sw.on; }
 - (void)askDeleteChanged:(UISwitch *)sw { VGDownloadDefaults.askDeleteWatched = sw.on; }
 - (void)hapticsChanged:(UISwitch *)sw { VGHaptics.enabled = sw.on; if (sw.on) [VGHaptics select]; }
 - (void)padLayoutChanged:(UISwitch *)sw {

@@ -365,7 +365,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = self.vaultMode ? @"Private Vault 2.0" : (self.folder.name ?: @"Downloads");
-    self.view.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
     BOOL isMain = !self.vaultMode && !self.folder;
     // The main list draws its own big title (see headerTitle); the folder and vault screens keep the normal large title.
     self.navigationItem.largeTitleDisplayMode = isMain ? UINavigationItemLargeTitleDisplayModeNever : UINavigationItemLargeTitleDisplayModeAlways;
@@ -410,7 +410,7 @@ enum { kSecFolders = 0, kSecTasks = 1, kSecItems = 2 };
     }
 
     self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
-    self.table.backgroundColor = VGBackground;
+    self.table.backgroundColor = VGScreen;
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.dataSource = self;
     self.table.delegate = self;

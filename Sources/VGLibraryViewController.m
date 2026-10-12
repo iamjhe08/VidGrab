@@ -226,7 +226,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -300,7 +300,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     self.header = head;
 
     self.collection = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:[self makeLayout]];
-    self.collection.backgroundColor = VGBackground;
+    self.collection.backgroundColor = VGScreen;
     self.collection.dataSource = self;
     self.collection.delegate = self;
     self.collection.alwaysBounceVertical = YES;

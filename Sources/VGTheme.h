@@ -11,9 +11,15 @@ static inline UIColor *VGHex(unsigned int h) {
 @property (nonatomic, readonly) NSString *title, *detail;
 /// Futuristic glass look: see-through bars with a blur.
 @property (nonatomic, readonly) BOOL glass;
+/// No colored glow behind the Home header or the player (for the greys-only themes).
+@property (nonatomic, readonly) BOOL flat;
+/// Uses a wallpaper picture behind the main pages (Carbon).
+@property (nonatomic, readonly) BOOL carbon;
 /// A light theme (white background, dark text).
 @property (nonatomic, readonly) BOOL light;
 /// The video player always stays dark; these are its glass, edge and background colors.
+/// The color of the VidGrab logo (the accent unless the theme says otherwise).
+@property (nonatomic, readonly) UIColor *logoColor;
 @property (nonatomic, readonly) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 + (VGPalette *)current;
 + (NSArray<VGPalette *> *)all;
@@ -24,6 +30,7 @@ static inline UIColor *VGHex(unsigned int h) {
 extern NSString *const VGThemeDidChangeNotification;
 
 #define VGBackground  ([VGPalette current].background)
+#define VGScreen      ([VGPalette current].carbon ? VGCarbonColor() : [VGPalette current].background)
 #define VGSurface     ([VGPalette current].surface)
 #define VGSurface2    ([VGPalette current].surface2)
 #define VGStroke      ([VGPalette current].stroke)
@@ -37,6 +44,7 @@ extern NSString *const VGThemeDidChangeNotification;
 #define VGListBg      ([VGPalette current].listBackground)
 #define VGSelectedBg  ([VGPalette current].selectedCell)
 #define VGLight       ([VGPalette current].light)
+#define VGLogo        ([VGPalette current].logoColor ?: [VGPalette current].accent)
 #define VGPlayerBG        ([VGPalette current].playerBackground)
 #define VGPlayerSurface   ([VGPalette current].playerSurface)
 #define VGPlayerStroke    ([VGPalette current].playerStroke)
@@ -81,5 +89,7 @@ UIButton *VGSecondaryButton(NSString *title, NSString *icon);
 
 /// VidGrab's app icon with its colors turned to match the chosen theme (the original for Default).
 UIImage *VGThemedIcon(void);
+/// The carbon wallpaper as a color that fills a whole screen.
+UIColor *VGCarbonColor(void);
 /// The accent as a CSS color for web pages, e.g. "rgba(255,61,104,0.96)".
 NSString *VGAccentCSS(void);

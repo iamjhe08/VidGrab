@@ -7,7 +7,8 @@ NSString *const VGThemeDidChangeNotification = @"VGThemeDidChangeNotification";
 @property (nonatomic, readwrite) UIColor *background, *surface, *surface2, *stroke, *text, *secondary, *tertiary;
 @property (nonatomic, readwrite) UIColor *accent, *accent2, *accentSoft, *tabBar, *listBackground, *selectedCell, *editButton;
 @property (nonatomic, readwrite) NSString *title, *detail;
-@property (nonatomic, readwrite) BOOL glass, light;
+@property (nonatomic, readwrite) BOOL glass, light, flat, carbon;
+@property (nonatomic, readwrite) UIColor *logoColor;
 @property (nonatomic, readwrite) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 @end
 
@@ -46,6 +47,19 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
         // GD: a true-black canvas with a warm gold accent.
         a = [a arrayByAddingObject:make(@"GD", @"",
                  0x000000, 0x0C0C0C, 0x161616, 0x262626, 0xA8A8A8, 0x6A6A6A, 0xF5B800, 0xFFD54A, 0xFFE08A, 0x000000, 0x050505, 0x2A2410, 0x363636)];
+        // PB: pitch black with no accent color (greys only). Only the VidGrab logo is dark grey.
+        VGPalette *pb = make(@"PB", @"",
+                 0x000000, 0x090909, 0x131313, 0x222222, 0x9A9A9A, 0x4D4D4D, 0x808080, 0x5C5C5C, 0x9A9A9A, 0x000000, 0x000000, 0x1B1B1B, 0x2C2C2C);
+        pb.logoColor = VGHex(0x6A6A6A);
+        pb.flat = YES;
+        a = [a arrayByAddingObject:pb];
+        // CB: carbon. Charcoal greys with a cool steel tint, no accent color; the logo is brushed silver.
+        VGPalette *cb = make(@"CB", @"",
+                 0x131415, 0x1B1C1E, 0x25272A, 0x34363A, 0xA0A3A8, 0x5A5D62, 0x8C9096, 0x6A6E74, 0xA9ADB3, 0x0E0F10, 0x111213, 0x2A2C2F, 0x3A3D41);
+        cb.logoColor = VGHex(0xB8BDC4);
+        cb.flat = YES; cb.carbon = YES;
+        cb.playerBackground = VGHex(0x0D0E0F); cb.playerSurface = VGHex(0x1A1B1D); cb.playerStroke = VGHex(0x303236); cb.playerSecondary = VGHex(0xA0A3A8);
+        a = [a arrayByAddingObject:cb];
     });
     return a;
 }
@@ -116,7 +130,7 @@ UILabel *VGWordmark(CGFloat size) {
     if (d) f = [UIFont fontWithDescriptor:d size:size];
     l.attributedText = [[NSAttributedString alloc] initWithString:@"VIDGRAB" attributes:@{
         NSFontAttributeName: f,
-        NSForegroundColorAttributeName: VGAccent,
+        NSForegroundColorAttributeName: VGLogo,
         NSKernAttributeName: @(1.5),
     }];
     return l;
@@ -142,6 +156,7 @@ static UIButton *makeButton(NSString *title, NSString *icon, UIColor *bg, UIColo
 }
 
 UIButton *VGPrimaryButton(NSString *title, NSString *icon) {
+    if (VGPalette.current.flat) return makeButton(title, icon, VGHex(0x3A3A3A), UIColor.whiteColor);   // greys-only themes: no bright white button
     return VGPalette.current.light ? makeButton(title, icon, VGText, UIColor.whiteColor) : makeButton(title, icon, UIColor.whiteColor, VGHex(0x0A0A0D));
 }
 
@@ -158,11 +173,18 @@ UIImage *VGThemedIcon(void) {
     if (cache[key]) return cache[key];
     CGFloat h0 = 0, h1 = 0, sat = 0, br = 0, al = 0;
     [VGHex(0xFF3D68) getHue:&h0 saturation:&sat brightness:&br alpha:&al];
-    [VGAccent getHue:&h1 saturation:&sat brightness:&br alpha:&al];
+    [VGLogo getHue:&h1 saturation:&sat brightness:&br alpha:&al];
     CIImage *in = [CIImage imageWithCGImage:base.CGImage];
-    CIFilter *f = [CIFilter filterWithName:@"CIHueAdjust"];
-    [f setValue:in forKey:kCIInputImageKey];
-    [f setValue:@((h1 - h0) * 2 * M_PI) forKey:kCIInputAngleKey];
+    CIFilter *f;
+    if (sat < 0.08) {
+        f = [CIFilter filterWithName:@"CIColorControls"];
+        [f setValue:in forKey:kCIInputImageKey];
+        [f setValue:@0.0 forKey:kCIInputSaturationKey];
+    } else {
+        f = [CIFilter filterWithName:@"CIHueAdjust"];
+        [f setValue:in forKey:kCIInputImageKey];
+        [f setValue:@((h1 - h0) * 2 * M_PI) forKey:kCIInputAngleKey];
+    }
     CIImage *out = f.outputImage;
     CGImageRef cg = out ? [[CIContext contextWithOptions:nil] createCGImage:out fromRect:in.extent] : NULL;
     if (!cg) return base;
@@ -170,6 +192,23 @@ UIImage *VGThemedIcon(void) {
     CGImageRelease(cg);
     cache[key] = img;
     return img;
+}
+
+UIColor *VGCarbonColor(void) {
+    static UIColor *cached; static CGSize cachedSize;
+    CGSize s = UIScreen.mainScreen.bounds.size;
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) { CGFloat m = MAX(s.width, s.height); s = CGSizeMake(m, m); }
+    if (cached && CGSizeEqualToSize(s, cachedSize)) return cached;
+    UIImage *img = [UIImage imageWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"carbon" ofType:@"jpg"]];
+    if (!img) return [VGPalette current].background;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:s];
+    UIImage *fit = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
+        CGFloat k = MAX(s.width / img.size.width, s.height / img.size.height);
+        CGSize d = CGSizeMake(img.size.width * k, img.size.height * k);
+        [img drawInRect:CGRectMake((s.width - d.width) / 2, 0, d.width, d.height)];
+    }];
+    cached = [UIColor colorWithPatternImage:fit]; cachedSize = s;
+    return cached;
 }
 
 NSString *VGAccentCSS(void) {

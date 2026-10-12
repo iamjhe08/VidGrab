@@ -20,6 +20,8 @@ static NSInteger HeightOf(VGOption *o) {
 + (void)setFilesOnly:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgFilesOnly"]; }
 + (BOOL)wifiOnly { return [NSUserDefaults.standardUserDefaults boolForKey:@"vgWifiOnly"]; }
 + (void)setWifiOnly:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgWifiOnly"]; }
++ (BOOL)autoStartShared { id v = [NSUserDefaults.standardUserDefaults objectForKey:@"vgAutoStartShared"]; return v ? [v boolValue] : YES; }
++ (void)setAutoStartShared:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgAutoStartShared"]; }
 + (BOOL)askDeleteWatched { return [NSUserDefaults.standardUserDefaults boolForKey:@"vgAskDeleteWatched"]; }
 + (void)setAskDeleteWatched:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgAskDeleteWatched"]; }
 + (NSArray<NSNumber *> *)threadChoices { return @[@1, @2, @3, @4, @5, @6, @7, @8, @9, @10]; }

@@ -17,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (class, nonatomic) BOOL wifiOnly;
 /// YES = after a video from Downloads or the Library plays to the end, ask whether to delete it.
 @property (class, nonatomic) BOOL askDeleteWatched;
+/// Share > VidGrab starts the download by itself (only when a default type and quality are set). On unless turned off.
+@property (class, nonatomic) BOOL autoStartShared;
 + (NSArray<NSNumber *> *)threadChoices;
 /// The extra-info text for a download with the thread count added.
 + (NSString *)extraWithThreads:(NSString *)extra;

@@ -23,6 +23,7 @@ static NSDictionary<NSString *, NSString *> *Known(void) {
         @"vgTheme":            @"Theme",
         @"vgWifiOnly":         @"Wi-Fi only downloads",
         @"vgAskDeleteWatched": @"Ask to delete finished videos",
+        @"vgAutoStartShared":   @"Auto-start shared links",
         @"vgCrossfade":        @"Crossfade",
         @"vgSubSize":          @"Subtitle text size",
         @"vgSubColor":         @"Subtitle text color",

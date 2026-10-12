@@ -402,6 +402,10 @@ def _options(info):
 
 def _pick_option(info, want):
     """Turns a playlist-wide choice ('best', 'mp3', or a height like '1080') into this video's option."""
+    if want in ('wav', 'flac'):
+        return want
+    if want == 'm4a':
+        return 'audio'
     opts = _options(info)
     ids = [o['id'] for o in opts]
     if want == 'mp3':
@@ -1116,6 +1120,8 @@ def _attempt(task, url, option_id, out_dir, cache_dir, clients, cookiefile='', e
         'kind': kind if kind in ('merge', 'convert', 'audio', 'mp3', 'wav', 'flac') else 'single',
         'title': info.get('title') or '',
         'uploader': info.get('uploader') or info.get('channel') or '',
+        'thumbnail': info.get('thumbnail') or '',
+        'duration': info.get('duration') or 0,
         'files': files,
         'photos': photos,
         'name': safe,

@@ -11,8 +11,8 @@ NSString *const VGOpenSavedPlaylist = @"VGOpenSavedPlaylist";
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Saved Playlists";
-    self.view.backgroundColor = VGBackground;
-    self.tableView.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
+    self.tableView.backgroundColor = VGScreen;
     self.tableView.separatorColor = VGStroke;
     [NSNotificationCenter.defaultCenter addObserver:self.tableView selector:@selector(reloadData) name:VGSavedPlaylistsChanged object:nil];
 }

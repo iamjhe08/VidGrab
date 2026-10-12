@@ -28,7 +28,7 @@ static const CGFloat kWideEnough = 700;   // narrower than this (Split View, sma
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
 
     self.side = [UIView new];
     self.side.backgroundColor = VGTabBarBg;
@@ -105,7 +105,7 @@ static const CGFloat kWideEnough = 700;   // narrower than this (Split View, sma
 
 /// A new theme was picked: repaint the side list.
 - (void)retheme {
-    self.view.backgroundColor = VGBackground;
+    self.view.backgroundColor = VGScreen;
     self.side.backgroundColor = VGTabBarBg;
     self.edge.backgroundColor = VGStroke;
     self.brand.textColor = VGText;
