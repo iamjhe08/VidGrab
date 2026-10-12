@@ -51,7 +51,38 @@ static void *objc_msgSend_ptr(void) { return (void *)objc_msgSend; }
     }
 }
 
+/// First try VidGrab in the background (works while it is still awake); if it does not answer, open the app.
 - (void)openApp:(NSString *)link {
+    NSString *enc = [link stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.alphanumericCharacterSet];
+    NSURL *quick = [NSURL URLWithString:[@"http://127.0.0.1:47631/add?url=" stringByAppendingString:enc ?: @""]];
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 1.5;
+    __weak typeof(self) ws = self;
+    [[[NSURLSession sessionWithConfiguration:cfg] dataTaskWithURL:quick completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSString *reply = d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([reply isEqualToString:@"ok"]) [ws showAdded];
+            else [ws openAppDirectly:link];
+        });
+    }] resume];
+}
+
+- (void)showAdded {
+    UILabel *l = [UILabel new];
+    l.text = @"  Sent to VidGrab  ";
+    l.textColor = UIColor.whiteColor;
+    l.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    l.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.92];
+    l.layer.cornerRadius = 14; l.clipsToBounds = YES;
+    [l sizeToFit];
+    l.frame = CGRectInset(l.frame, -10, -12);
+    l.center = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
+    [self.view addSubview:l];
+    __weak typeof(self) ws = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [ws done]; });
+}
+
+- (void)openAppDirectly:(NSString *)link {
     NSURLComponents *c = [NSURLComponents componentsWithString:@"vidgrab://download"];
     c.queryItems = @[[NSURLQueryItem queryItemWithName:@"url" value:link]];
     NSURL *url = c.URL;
