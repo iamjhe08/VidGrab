@@ -39,7 +39,9 @@ static NSString *clean(NSString *tag) {
             for (NSDictionary *a in [json[@"assets"] isKindOfClass:NSArray.class] ? json[@"assets"] : @[]) {
                 if (![a isKindOfClass:NSDictionary.class]) continue;
                 NSString *name = [a[@"name"] isKindOfClass:NSString.class] ? a[@"name"] : @"";
-                if ([name.lowercaseString hasSuffix:@".ipa"]) { ipa = a[@"browser_download_url"]; break; }
+                // The TrollStore .tipa has its own bundle id (ending in .ts); update with the matching file so the old copy is replaced, not duplicated.
+                NSString *ext = [NSBundle.mainBundle.bundleIdentifier hasSuffix:@".ts"] ? @".tipa" : @".ipa";
+                if ([name.lowercaseString hasSuffix:ext]) { ipa = a[@"browser_download_url"]; break; }
             }
             if (!version.length) problem = @"The latest release has no version number.";
         }

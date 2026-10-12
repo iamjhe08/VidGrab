@@ -96,7 +96,7 @@ static const CGFloat kWideEnough = 700;   // narrower than this (Split View, sma
                          imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         [b setImage:icon forState:UIControlStateNormal];
         [b setTitle:[@"  " stringByAppendingString:it.title ?: @""] forState:UIControlStateNormal];
-        b.tintColor = on ? VGAccent : VGSecondary;
+        b.tintColor = on ? VGOn : VGSecondary;
         [b setTitleColor:on ? VGText : VGSecondary forState:UIControlStateNormal];
         b.backgroundColor = on ? VGSelectedBg : UIColor.clearColor;
         b.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 10);

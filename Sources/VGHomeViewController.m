@@ -1046,7 +1046,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 - (void)stylePill:(UIButton *)b on:(BOOL)on {
     b.backgroundColor = on ? [VGAccent colorWithAlphaComponent:0.14] : VGSurface2;
-    b.layer.borderColor = (on ? VGAccent : VGStroke).CGColor;
+    b.layer.borderColor = (on ? VGOn : VGStroke).CGColor;
     b.layer.borderWidth = on ? 2 : 1;
     [b setTitleColor:VGText forState:UIControlStateNormal];
     b.accessibilityTraits = on ? (UIAccessibilityTraitButton | UIAccessibilityTraitSelected) : UIAccessibilityTraitButton;
@@ -1152,7 +1152,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     BOOL saved = self.video.url.length && [VGPlaylistStore forURL:self.video.url] != nil;
     [self.playlistSave setTitle:saved ? @"  Saved · tap to remove" : @"  Save playlist" forState:UIControlStateNormal];
     [self.playlistSave setImage:[UIImage systemImageNamed:saved ? @"bookmark.fill" : @"bookmark"] forState:UIControlStateNormal];
-    self.playlistSave.tintColor = saved ? VGAccent : VGText;
+    self.playlistSave.tintColor = saved ? VGOn : VGText;
 }
 
 - (void)savePlaylistTapped {
@@ -1198,7 +1198,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         row.tag = (NSInteger)i;
         [row addTarget:self action:@selector(togglePicked:) forControlEvents:UIControlEventTouchUpInside];
         UIImageView *check = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:on ? @"checkmark.circle.fill" : @"circle"]];
-        check.tintColor = on ? VGAccent : VGTertiary;
+        check.tintColor = on ? VGOn : VGTertiary;
         check.contentMode = UIViewContentModeScaleAspectFit;
         check.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightRegular];
         [check.widthAnchor constraintEqualToConstant:26].active = YES;

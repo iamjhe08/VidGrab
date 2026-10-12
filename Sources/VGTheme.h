@@ -20,6 +20,8 @@ static inline UIColor *VGHex(unsigned int h) {
 /// The video player always stays dark; these are its glass, edge and background colors.
 /// The color of the VidGrab logo (the accent unless the theme says otherwise).
 @property (nonatomic, readonly) UIColor *logoColor;
+/// When set, primary buttons use the accent color with this text color (instead of white or grey).
+@property (nonatomic, readonly) UIColor *onAccent;
 @property (nonatomic, readonly) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 + (VGPalette *)current;
 + (NSArray<VGPalette *> *)all;
@@ -40,6 +42,10 @@ extern NSString *const VGThemeDidChangeNotification;
 #define VGAccent      ([VGPalette current].accent)
 #define VGAccent2     ([VGPalette current].accent2)
 #define VGAccentSoft  ([VGPalette current].accentSoft)
+/// The color of something switched on (shuffle, repeat, selected...). The greys-only themes use bright white so "on" is easy to tell from "off".
+#define VGOn          ([VGPalette current].flat ? VGHex(0xF2F2F2) : [VGPalette current].accent)
+/// The "off" color on the dark player (white normally, dim grey on the greys-only themes so the "on" white stands out).
+#define VGOffOnPlayer ([VGPalette current].flat ? VGHex(0x6A6A6A) : UIColor.whiteColor)
 #define VGTabBarBg    ([VGPalette current].tabBar)
 #define VGListBg      ([VGPalette current].listBackground)
 #define VGSelectedBg  ([VGPalette current].selectedCell)

@@ -8,7 +8,7 @@ NSString *const VGThemeDidChangeNotification = @"VGThemeDidChangeNotification";
 @property (nonatomic, readwrite) UIColor *accent, *accent2, *accentSoft, *tabBar, *listBackground, *selectedCell, *editButton;
 @property (nonatomic, readwrite) NSString *title, *detail;
 @property (nonatomic, readwrite) BOOL glass, light, flat, carbon;
-@property (nonatomic, readwrite) UIColor *logoColor;
+@property (nonatomic, readwrite) UIColor *logoColor, *onAccent;
 @property (nonatomic, readwrite) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 @end
 
@@ -60,6 +60,21 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
         cb.flat = YES; cb.carbon = YES;
         cb.playerBackground = VGHex(0x0D0E0F); cb.playerSurface = VGHex(0x1A1B1D); cb.playerStroke = VGHex(0x303236); cb.playerSecondary = VGHex(0xA0A3A8);
         a = [a arrayByAddingObject:cb];
+        // MBRG: matte black with rose gold. Soft rose buttons with dark text.
+        VGPalette *mb = make(@"MBRG", @"",
+                 0x0B0B0D, 0x171719, 0x222226, 0x2A2A2E, 0xA1A1AA, 0x6E6E76, 0xD9A0A7, 0xB87982, 0xE8C0C5, 0x0B0B0D, 0x0E0E10, 0x2B2124, 0x2E2E33);
+        mb.onAccent = VGHex(0x0B0B0D);
+        a = [a arrayByAddingObject:mb];
+        // MC: monochrome crimson. Graphite greys with one crimson red.
+        VGPalette *mc = make(@"MC", @"",
+                 0x101214, 0x1A1D20, 0x25282C, 0x2F3338, 0x8A8E94, 0x5C6066, 0xFF1F3D, 0xD9162B, 0xFF7A8C, 0x0C0E10, 0x0F1113, 0x2A1519, 0x30343A);
+        mc.onAccent = UIColor.whiteColor;
+        a = [a arrayByAddingObject:mc];
+        // PF: pink flow, in its deep plum dark look. Hot pink buttons with white text.
+        VGPalette *pf = make(@"PF", @"",
+                 0x22101C, 0x331828, 0x45223A, 0x5A2E4A, 0xD4A8C0, 0x9A6C86, 0xEC4899, 0xF472B6, 0xFBCFE8, 0x1B0C16, 0x1F0E19, 0x4A2040, 0x573052);
+        pf.onAccent = UIColor.whiteColor;
+        a = [a arrayByAddingObject:pf];
     });
     return a;
 }
@@ -156,6 +171,7 @@ static UIButton *makeButton(NSString *title, NSString *icon, UIColor *bg, UIColo
 }
 
 UIButton *VGPrimaryButton(NSString *title, NSString *icon) {
+    if (VGPalette.current.onAccent) return makeButton(title, icon, VGAccent, VGPalette.current.onAccent);
     if (VGPalette.current.flat) return makeButton(title, icon, VGHex(0x3A3A3A), UIColor.whiteColor);   // greys-only themes: no bright white button
     return VGPalette.current.light ? makeButton(title, icon, VGText, UIColor.whiteColor) : makeButton(title, icon, UIColor.whiteColor, VGHex(0x0A0A0D));
 }

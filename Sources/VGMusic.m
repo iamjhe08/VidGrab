@@ -676,8 +676,8 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     BOOL pl = p.playing;
     SetSymbol(self.topPlay, pl ? @"pause.fill" : @"play.fill", 20, VGText);
     SetSymbol(self.playB, pl ? @"pause.circle.fill" : @"play.circle.fill", 44, VGText);
-    SetSymbol(self.shuffleB, @"shuffle", 18, p.shuffle ? VGAccent : VGSecondary);
-    SetSymbol(self.repeatB, p.repeatMode == 2 ? @"repeat.1" : @"repeat", 18, p.repeatMode ? VGAccent : VGSecondary);
+    SetSymbol(self.shuffleB, @"shuffle", 18, p.shuffle ? VGOn : VGTertiary);
+    SetSymbol(self.repeatB, p.repeatMode == 2 ? @"repeat.1" : @"repeat", 18, p.repeatMode ? VGOn : VGTertiary);
     self.prevB.enabled = self.nextB.enabled = self.topNext.enabled = p.queue.count > 0;
     [self tick];
 }
@@ -1149,9 +1149,9 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     self.art.tintColor = VGTertiary;
     BOOL pl = p.playing;
     [self.playB setImage:[[UIImage systemImageNamed:pl ? @"pause.fill" : @"play.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightBold]] imageWithTintColor:VGBackground renderingMode:UIImageRenderingModeAlwaysOriginal] forState:UIControlStateNormal];
-    SetSymbol(self.shuffleB, @"shuffle", 19, p.shuffle ? VGAccent : VGSecondary);
-    SetSymbol(self.repeatB, p.repeatMode == 2 ? @"repeat.1" : @"repeat", 19, p.repeatMode ? VGAccent : VGSecondary);
-    SetSymbol(self.sleepB, p.sleepActive ? @"moon.zzz.fill" : @"moon.zzz", 18, p.sleepActive ? VGAccent : VGSecondary);
+    SetSymbol(self.shuffleB, @"shuffle", 19, p.shuffle ? VGOn : VGTertiary);
+    SetSymbol(self.repeatB, p.repeatMode == 2 ? @"repeat.1" : @"repeat", 19, p.repeatMode ? VGOn : VGTertiary);
+    SetSymbol(self.sleepB, p.sleepActive ? @"moon.zzz.fill" : @"moon.zzz", 18, p.sleepActive ? VGOn : VGTertiary);
     self.prevB.enabled = self.nextB.enabled = p.queue.count > 0;
     if (_lyricsOn) [self ensureLyrics];
     [self tick];

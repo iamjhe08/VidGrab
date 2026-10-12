@@ -69,7 +69,7 @@ static NSString *const kSortKey = @"vgLibSort", *const kSortUpKey = @"vgLibSortU
     if (self.check.hidden) return;
     self.check.contentMode = UIViewContentModeScaleAspectFit;
     self.check.image = [UIImage systemImageNamed:self.selected ? @"checkmark.circle.fill" : @"circle"];
-    self.check.tintColor = self.selected ? VGAccent : UIColor.whiteColor;
+    self.check.tintColor = self.selected ? VGOn : UIColor.whiteColor;
 }
 
 - (void)configureWith:(VGItem *)item grid:(BOOL)grid selecting:(BOOL)selecting {

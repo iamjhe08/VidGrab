@@ -275,7 +275,7 @@ static NSString *const kOverlayJS = @""
     UIImage *img = [UIImage systemImageNamed:active ? @"shield.lefthalf.filled" : @"shield.slash"
                            withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold]];
     [self.shieldButton setImage:img forState:UIControlStateNormal];
-    self.shieldButton.tintColor = active ? VGAccent : VGTertiary;
+    self.shieldButton.tintColor = active ? VGOn : VGTertiary;
 }
 
 - (NSArray<UIMenuElement *> *)shieldMenuItems {
@@ -474,7 +474,7 @@ static NSString *normalizedLink(NSString *text) {
     [self.starButton setImage:[UIImage systemImageNamed:fav ? @"star.fill" : @"star"
                                        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]]
                      forState:UIControlStateNormal];
-    self.starButton.tintColor = fav ? VGAccent : VGTertiary;
+    self.starButton.tintColor = fav ? VGOn : VGTertiary;
     self.starButton.accessibilityLabel = fav ? @"Remove from Favorites" : @"Add to Favorites";
     self.address.rightViewMode = host ? UITextFieldViewModeUnlessEditing : UITextFieldViewModeNever;
 }

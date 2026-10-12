@@ -302,7 +302,7 @@ static NSCache<NSString *, UIImage *> *thumbCache(void) {
     [self.pauseButton setImage:[UIImage systemImageNamed:paused ? @"play.circle.fill" : @"pause.circle.fill"
                                           withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold]]
                       forState:UIControlStateNormal];
-    self.pauseButton.tintColor = paused ? VGAccent : VGTertiary;
+    self.pauseButton.tintColor = paused ? VGOn : VGTertiary;
     self.pauseButton.accessibilityLabel = paused ? @"Resume download" : @"Pause download";
 
     NSString *url = t.video.thumbnail;

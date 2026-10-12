@@ -485,8 +485,8 @@ typedef NS_ENUM(NSInteger, VGPadMode) { VGPadUnlock, VGPadCreate, VGPadConfirm }
     }
     for (NSUInteger i = 0; i < kDigits; i++) {
         BOOL on = i < self.entered.length;
-        self.dots[i].backgroundColor = on ? VGAccent : UIColor.clearColor;
-        self.dots[i].layer.borderColor = (on ? VGAccent : VGSecondary).CGColor;
+        self.dots[i].backgroundColor = on ? VGOn : UIColor.clearColor;
+        self.dots[i].layer.borderColor = (on ? VGOn : VGSecondary).CGColor;
     }
 }
 

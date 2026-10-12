@@ -462,10 +462,10 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     UIImageSymbolConfiguration *c = [UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightSemibold];
     for (NSUInteger i = 0; i < self.options.count; i++) {
         BOOL on = self.options[i] == self.chosen;
-        self.rows[i].layer.borderColor = (on ? VGAccent : UIColor.clearColor).CGColor;
+        self.rows[i].layer.borderColor = (on ? VGOn : UIColor.clearColor).CGColor;
         self.rows[i].backgroundColor = on ? [VGAccent colorWithAlphaComponent:0.18] : [UIColor colorWithWhite:1 alpha:0.07];
         self.ticks[i].image = [UIImage systemImageNamed:on ? @"checkmark.circle.fill" : @"circle" withConfiguration:c];
-        self.ticks[i].tintColor = on ? VGAccent : [UIColor colorWithWhite:1 alpha:0.3];
+        self.ticks[i].tintColor = on ? VGOn : [UIColor colorWithWhite:1 alpha:0.3];
     }
     VGOption *o = self.chosen;
     NSString *what = o.audio ? @"audio" : o.res;
@@ -668,7 +668,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     c.selectionStyle = UITableViewCellSelectionStyleNone;
     c.textLabel.text = self.titles[ip.row];
     c.textLabel.font = [UIFont systemFontOfSize:16 weight:now ? UIFontWeightBold : UIFontWeightSemibold];
-    c.textLabel.textColor = now ? VGAccent : UIColor.whiteColor;
+    c.textLabel.textColor = now ? VGOn : UIColor.whiteColor;
     c.textLabel.numberOfLines = 2;
     UILabel *n = [UILabel new];
     n.frame = CGRectMake(0, 0, 44, 30);
@@ -2321,7 +2321,7 @@ static char kSubAssetKey;
 - (void)styleSleepButton {
     BOOL on = self.sleepAt || self.sleepAtEnd;
     [self.sleepButton setImage:[UIImage systemImageNamed:on ? @"moon.zzz.fill" : @"moon.zzz" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
-    self.sleepButton.tintColor = on ? VGAccent : UIColor.whiteColor;
+    self.sleepButton.tintColor = on ? VGOn : VGOffOnPlayer;
 }
 
 - (void)setSleepMinutes:(NSInteger)minutes {
@@ -2371,7 +2371,7 @@ static char kSubAssetKey;
 }
 
 - (void)styleModeButtons {
-    UIColor *on = VGAccent, *off = UIColor.whiteColor;
+    UIColor *on = VGOn, *off = VGOffOnPlayer;
     self.shuffleButton.tintColor = self.shuffleOn ? on : off;
     self.repeatButton.tintColor = self.repeatMode ? on : off;
     NSString *name = self.repeatMode == 2 ? @"repeat.1" : @"repeat";
@@ -2406,7 +2406,7 @@ static char kSubAssetKey;
     self.pipButton.hidden = off || self.pip == nil;
     [self updateControlLayout];
     SetSymbol(self.videoToggleButton, off ? @"video.slash.fill" : @"video.fill", 16);
-    self.videoToggleButton.tintColor = off ? VGAccent : UIColor.whiteColor;
+    self.videoToggleButton.tintColor = off ? VGOn : VGOffOnPlayer;
     [self syncVideoTracks];
 }
 
