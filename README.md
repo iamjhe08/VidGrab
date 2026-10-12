@@ -43,6 +43,18 @@ Made by T4MAG0 · [github.com/iamjhe08](https://github.com/iamjhe08)
 
 Works on iOS 15 and newer. No jailbreak needed.
 
+### Sideload source (Feather, AltStore and similar)
+
+Add this source in your sideloading app and VidGrab updates show up there automatically:
+
+```
+https://iamjhe08.github.io/repo/vidgrab-source.json
+```
+
+### Jailbreak
+
+Add the repo `https://iamjhe08.github.io/repo/` in Sileo (rootful, rootless and roothide packages).
+
 ## Credits
 
 VidGrab wouldn't exist without **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**. It's the engine that does the real work of finding and downloading videos from all these sites. Huge thanks to the yt-dlp developers and everyone who keeps it working as sites change. If a site breaks, VidGrab can update yt-dlp from Settings, so fixes from their team reach you quickly.
