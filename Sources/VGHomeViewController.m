@@ -1,6 +1,7 @@
 #import "VGHomeViewController.h"
 #import "VGShareBridge.h"
 #import "VGDownloadDefaults.h"
+#import "VGLocalize.h"
 #import "VGPlaylistStore.h"
 #import "VGSavedPlaylistsViewController.h"
 #import "VGEngine.h"
@@ -166,7 +167,12 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     themeB.tintColor = VGText;
     themeB.accessibilityLabel = @"Theme";
     [themeB addTarget:self action:@selector(chooseTheme:) forControlEvents:UIControlEventTouchUpInside];
-    for (UIView *v in @[mark, themeB, gear]) { v.translatesAutoresizingMaskIntoConstraints = NO; [header addSubview:v]; }
+    UIButton *langB = [UIButton buttonWithType:UIButtonTypeSystem];
+    [langB setImage:[UIImage systemImageNamed:@"globe" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold]] forState:UIControlStateNormal];
+    langB.tintColor = VGText;
+    langB.accessibilityLabel = @"Language";
+    [langB addTarget:self action:@selector(chooseLanguage:) forControlEvents:UIControlEventTouchUpInside];
+    for (UIView *v in @[mark, langB, themeB, gear]) { v.translatesAutoresizingMaskIntoConstraints = NO; [header addSubview:v]; }
 
     self.scroll = [UIScrollView new];
     self.scroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -196,6 +202,10 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
         [themeB.centerYAnchor constraintEqualToAnchor:gear.centerYAnchor],
         [themeB.widthAnchor constraintEqualToConstant:44],
         [themeB.heightAnchor constraintEqualToConstant:44],
+        [langB.trailingAnchor constraintEqualToAnchor:themeB.leadingAnchor constant:-2],
+        [langB.centerYAnchor constraintEqualToAnchor:gear.centerYAnchor],
+        [langB.widthAnchor constraintEqualToConstant:44],
+        [langB.heightAnchor constraintEqualToConstant:44],
 
         [self.scroll.topAnchor constraintEqualToAnchor:header.bottomAnchor],
         [self.scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -626,6 +636,10 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     a.popoverPresentationController.sourceView = from;
     a.popoverPresentationController.sourceRect = from.bounds;
     [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)chooseLanguage:(UIButton *)from {
+    [VGLocalize presentPickerFrom:self source:from done:nil];
 }
 
 - (void)openSettings {

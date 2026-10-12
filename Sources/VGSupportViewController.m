@@ -1,5 +1,6 @@
 #import "VGSupportViewController.h"
 #import "VGTheme.h"
+#import "VGLocalize.h"
 #import "VGActions.h"
 
 @implementation VGSupportViewController
@@ -31,7 +32,7 @@
 /// One "label / value / copy" row.
 - (UIView *)rowTitle:(NSString *)title value:(NSString *)value {
     UILabel *t = [self label:VGFont(12, UIFontWeightHeavy) color:VGTertiary];
-    t.attributedText = [[NSAttributedString alloc] initWithString:title.uppercaseString attributes:@{NSKernAttributeName: @0.8}];
+    t.attributedText = [[NSAttributedString alloc] initWithString:VGT(title).uppercaseString attributes:@{NSKernAttributeName: @0.8}];
     UILabel *v = [self label:VGFont(16, UIFontWeightSemibold) color:VGText];
     v.text = value;
     UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[t, v]];

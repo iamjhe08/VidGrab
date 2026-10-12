@@ -55,7 +55,7 @@ static void StyleGlass(UIVisualEffectView *v, CGFloat radius) {
 static const CGFloat kTrackHeight = 112;
 
 - (instancetype)init {
-    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
     if (!self) return nil;
     self.frame = CGRectMake(0, 0, 56, 208);
     StyleGlass(self, 28);
@@ -107,7 +107,7 @@ static const CGFloat kTrackHeight = 112;
 }
 
 - (instancetype)init {
-    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+    self = [super initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
     if (!self) return nil;
     self.frame = CGRectMake(0, 0, 172, 112);
     StyleGlass(self, 26);

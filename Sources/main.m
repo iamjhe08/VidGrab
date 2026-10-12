@@ -2,6 +2,7 @@
 #import "VGEngine.h"
 #import "VGUpdater.h"
 #import "VGTheme.h"
+#import "VGLocalize.h"
 #import "VGHomeViewController.h"
 #import "VGDownloadsViewController.h"
 #import "VGLibraryViewController.h"
@@ -154,6 +155,7 @@
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    [VGLocalize start];
     [VGCrash install];
     // If the last run ended badly while preparing the ad blocker, turn it off so the app can open.
     if ([[VGCrash previousLastStep] hasPrefix:@"adblock"]) [VGBlocker shared].enabled = NO;

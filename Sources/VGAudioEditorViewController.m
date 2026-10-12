@@ -1,6 +1,7 @@
 #import "VGAudioEditorViewController.h"
 #import "VGAudioTags.h"
 #import "VGTheme.h"
+#import "VGLocalize.h"
 #import "VGActions.h"
 #import "VGCoverSearch.h"
 #import <PhotosUI/PhotosUI.h>
@@ -42,7 +43,7 @@
 
 - (UILabel *)caption:(NSString *)s {
     UILabel *l = [UILabel new];
-    l.text = s.uppercaseString;
+    l.text = VGT(s).uppercaseString;
     l.font = VGFont(11, UIFontWeightHeavy);
     l.textColor = VGSecondary;
     return l;

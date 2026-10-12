@@ -583,7 +583,7 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 - (void)applyBlur {
     if (_blur) { [_blur stopAnimation:YES]; _blur = nil; self.card.effect = nil; }
     UIViewPropertyAnimator *a = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
-        self.card.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+        self.card.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark];
     }];
     a.pausesOnCompletion = YES;
     a.fractionComplete = 0.45;
@@ -1564,7 +1564,7 @@ static char kSubAssetKey;
 
 - (void)toast:(NSString *)text icon:(NSString *)icon {
     [self.toastView removeFromSuperview];
-    UIVisualEffectView *t = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleDark]];
+    UIVisualEffectView *t = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]];
     t.layer.cornerRadius = 21;
     t.clipsToBounds = YES;
     t.layer.borderWidth = 1;

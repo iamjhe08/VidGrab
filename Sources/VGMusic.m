@@ -852,7 +852,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 - (void)applyBlur {
     if (_blur) { [_blur stopAnimation:YES]; _blur = nil; self.effect = nil; }
     UIViewPropertyAnimator *a = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
-        self.effect = [UIBlurEffect effectWithStyle:VGLight ? UIBlurEffectStyleExtraLight : UIBlurEffectStyleDark];
+        self.effect = [UIBlurEffect effectWithStyle:VGLight ? UIBlurEffectStyleSystemMaterialLight : UIBlurEffectStyleSystemMaterialDark];
     }];
     a.pausesOnCompletion = YES;
     a.fractionComplete = 0.30;

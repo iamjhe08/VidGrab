@@ -1,6 +1,7 @@
 #import "VGSettingsViewController.h"
 #import "VGDownloadDefaults.h"
 #import "VGTheme.h"
+#import "VGLocalize.h"
 #import "VGEngine.h"
 #import "VGCache.h"
 #import "VGActions.h"
@@ -20,7 +21,7 @@
 #import <AVFoundation/AVFoundation.h>
 
 // The order the sections are shown in: downloading, playing, privacy, then housekeeping, and About last.
-typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionInterface, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
+typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSectionDownloads, VGSectionFloat, VGSectionGestures, VGSectionSubtitles, VGSectionAudio, VGSectionInterface, VGSectionVault, VGSectionStorage, VGSectionBackup, VGSectionAbout, VGSectionCount };
 
 @interface VGSettingsViewController ()
 @property (nonatomic, copy) NSString *cacheSize;
@@ -131,6 +132,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
         case VGSectionSubtitles: return 6;
         case VGSectionAudio: return 2;
         case VGSectionInterface: return 2;
+        case VGSectionLanguage: return 1;
         case VGSectionBackup: return 2;
         case VGSectionVault: return [VGVaultLock usesPasscode] ? 2 : 1;
         default: return 4;   // About: version, GitHub, check for updates, credits
@@ -138,14 +140,14 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
 }
 
 - (NSString *)sectionTitle:(NSInteger)section {
-    return @[@"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Interface", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
+    return @[@"Language", @"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Interface", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
 }
 
 // A small exclamation button in front of the section title; it opens and closes the section's note.
 - (UIView *)tableView:(UITableView *)tv viewForHeaderInSection:(NSInteger)section {
     UIView *v = [UIView new];
     UILabel *l = [UILabel new];
-    l.text = [self sectionTitle:section].uppercaseString;
+    l.text = VGT([self sectionTitle:section]).uppercaseString;
     l.font = VGFont(13, UIFontWeightSemibold);
     l.textColor = VGTertiary;
     l.translatesAutoresizingMaskIntoConstraints = NO;
@@ -403,6 +405,12 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return c;
     }
+    if (ip.section == VGSectionLanguage) {
+        NSString *ch = VGLocalize.choice;
+        UITableViewCell *c = [self cellWithTitle:@"Language" value:[ch isEqualToString:@"auto"] ? VGT(@"Auto") : [VGLocalize nameForChoice:ch] icon:@"globe" tint:nil];
+        c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return c;
+    }
     if (ip.section == VGSectionInterface) {
         BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
         if (ip.row == 0) {
@@ -414,6 +422,12 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
             [sw addTarget:self action:@selector(padLayoutChanged:) forControlEvents:UIControlEventValueChanged];
             c.accessoryView = sw;
             c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
+        if (NO) {
+            NSString *ch = VGLocalize.choice;
+            UITableViewCell *c = [self cellWithTitle:@"Language" value:[ch isEqualToString:@"auto"] ? VGT(@"Auto") : [VGLocalize nameForChoice:ch] icon:@"globe" tint:nil];
+            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
         UITableViewCell *c = [self cellWithTitle:@"Haptic feedback" value:nil icon:@"hand.tap" tint:nil];
@@ -511,6 +525,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     else if (ip.section == VGSectionDownloads && row == 0) [self chooseDefaultQuality:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionDownloads && row == 1) [self chooseDefaultKind:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionDownloads && row == 2) [self chooseThreads:[tv cellForRowAtIndexPath:ip]];
+    else if (ip.section == VGSectionLanguage && row == 0) [self chooseLanguage:[tv cellForRowAtIndexPath:ip]];
     else if (ip.section == VGSectionFloat && row == 3 && VGOverlay.canInstallHelper) [VGOverlay installHelperFrom:self];
     else if (ip.section == VGSectionFloat && row == 3 && !VGOverlay.bubbleAllowed) return;   // greyed out
     else if (ip.section == VGSectionFloat && row == 2 && !VGOverlay.fullInstall) return;
@@ -761,6 +776,10 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionEngine, VGSectionDownloads, VGS
     for (NSNumber *v in vals) [names addObject:[VGMusicPlayer nameForCrossfade:v.integerValue]];
     NSInteger sel = [vals indexOfObject:@(VGMusicPlayer.crossfade)];
     [self pickFrom:from title:@"Crossfade" names:names selected:sel == NSNotFound ? 0 : sel done:^(NSInteger i) { VGMusicPlayer.crossfade = vals[i].integerValue; }];
+}
+
+- (void)chooseLanguage:(UIView *)from {
+    [VGLocalize presentPickerFrom:self source:from done:^{ [self.tableView reloadData]; }];
 }
 
 - (void)chooseThreads:(UIView *)from {
