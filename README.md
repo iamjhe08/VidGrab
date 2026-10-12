@@ -53,7 +53,11 @@ https://iamjhe08.github.io/repo/vidgrab-source.json
 
 ### Jailbreak
 
-Add the repo `https://iamjhe08.github.io/repo/` in Sileo (rootful, rootless and roothide packages).
+Add this repo in Sileo (rootful, rootless and roothide packages):
+
+```
+https://iamjhe08.github.io/repo/
+```
 
 ## Credits
 
