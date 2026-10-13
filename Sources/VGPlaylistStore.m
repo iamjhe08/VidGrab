@@ -123,6 +123,24 @@ static NSString *storePath(void) {
     return p;
 }
 
++ (NSArray<NSDictionary *> *)exportDicts {
+    NSMutableArray *a = [NSMutableArray array];
+    for (VGSavedPlaylist *p in [self list]) [a addObject:[p dict]];
+    return a;
+}
+
++ (NSUInteger)importDicts:(NSArray *)dicts {
+    NSUInteger added = 0;
+    for (NSDictionary *d in [dicts isKindOfClass:NSArray.class] ? dicts : @[]) {
+        VGSavedPlaylist *p = [d isKindOfClass:NSDictionary.class] ? [VGSavedPlaylist fromDict:d] : nil;
+        if (!p || [self forURL:p.url] || [self withID:p.identifier]) continue;
+        [[self list] addObject:p];
+        added++;
+    }
+    if (added) [self persist];
+    return added;
+}
+
 + (void)remove:(VGSavedPlaylist *)p { [[self list] removeObject:p]; [self persist]; }
 
 + (void)rename:(VGSavedPlaylist *)p to:(NSString *)title {

@@ -118,7 +118,13 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 }
 
 - (instancetype)init {
-    if ((self = [super init])) { _queue = @[]; _order = [NSMutableArray array]; }
+    if ((self = [super init])) {
+        _queue = @[]; _order = [NSMutableArray array];
+        // shuffle and repeat are remembered between launches
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+        _shuffle = [d boolForKey:@"vgMusicShuffle"];
+        _repeatMode = MAX(0, MIN(2, (NSInteger)[d integerForKey:@"vgMusicRepeat"]));
+    }
     return self;
 }
 
@@ -418,11 +424,12 @@ extern BOOL VGPlayerIsActive(void);   // a video or stream player is open: it ow
 - (void)setShuffle:(BOOL)shuffle {
     if (_shuffle == shuffle) return;
     _shuffle = shuffle;
+    [NSUserDefaults.standardUserDefaults setBool:shuffle forKey:@"vgMusicShuffle"];
     if (_queue.count) [self rebuildOrderKeepingCurrent:YES];
     [self changed];
 }
 - (void)toggleShuffle { self.shuffle = !_shuffle; }
-- (void)cycleRepeat { _repeatMode = (_repeatMode + 1) % 3; [self changed]; }
+- (void)cycleRepeat { _repeatMode = (_repeatMode + 1) % 3; [NSUserDefaults.standardUserDefaults setInteger:_repeatMode forKey:@"vgMusicRepeat"]; [self changed]; }
 
 - (void)stop {
     _wantPlay = NO;
@@ -695,11 +702,19 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 @property (nonatomic, strong) UIButton *hintB;
 @property (nonatomic, strong) VGLyrics *lyrics;
 @property (nonatomic, strong) UIImageView *art;
+@property (nonatomic, strong) UIView *cdHole, *cdRing;
+@property (nonatomic) BOOL cdMode;
 @property (nonatomic, strong) UILabel *titleLabel, *subLabel, *elapsed, *remaining;
 @property (nonatomic, strong) UIButton *shuffleB, *prevB, *playB, *nextB, *repeatB, *minB, *stopB, *sleepB;
 @property (nonatomic, strong) UISlider *slider;
 @property (nonatomic) BOOL scrubbing;
 @end
+
+/// The spinning CD cover can be switched off in Settings > Audio (on by default).
+static BOOL VGCDAllowed(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return ![d objectForKey:@"vgCDEnabled"] || [d boolForKey:@"vgCDEnabled"];
+}
 
 @implementation VGMusicPanel {
     UIViewPropertyAnimator *_blur;
@@ -736,6 +751,17 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     self.art.layer.cornerCurve = kCACornerCurveContinuous;
     self.art.backgroundColor = VGSurface;
     [self.artShadow addSubview:self.art];
+    // CD look: a thin edge ring and the hole in the middle (they stay still while the cover spins)
+    self.cdRing = [UIView new];
+    self.cdRing.userInteractionEnabled = NO;
+    self.cdRing.layer.borderWidth = 1; self.cdRing.layer.borderColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.22].CGColor;
+    self.cdHole = [UIView new];
+    self.cdHole.userInteractionEnabled = NO;
+    self.cdHole.backgroundColor = VGBackground;
+    self.cdHole.layer.borderWidth = 3; self.cdHole.layer.borderColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.30].CGColor;
+    self.cdRing.alpha = self.cdHole.alpha = 0;
+    [self.artShadow addSubview:self.cdRing]; [self.artShadow addSubview:self.cdHole];
+    self.cdMode = [NSUserDefaults.standardUserDefaults boolForKey:@"vgCDShape"];
     [c addSubview:self.artShadow];
 
     self.titleLabel = [UILabel new]; self.titleLabel.font = VGFont(20, UIFontWeightBold); self.titleLabel.textColor = VGText;
@@ -830,6 +856,8 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     UISwipeGestureRecognizer *sl2 = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(swipedLeft)];
     sl2.direction = UISwipeGestureRecognizerDirectionLeft;
     [self.artShadow addGestureRecognizer:sl];
+    UITapGestureRecognizer *cdTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(toggleCD)];
+    [self.artShadow addGestureRecognizer:cdTap];
     UISwipeGestureRecognizer *sr = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(swipedRight)];
     sr.direction = UISwipeGestureRecognizerDirectionRight;
     [self.lyricsBox addGestureRecognizer:sr];
@@ -844,6 +872,8 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     [nc addObserver:self selector:@selector(refresh) name:VGMusicChangedNotification object:nil];
     [nc addObserver:self selector:@selector(tick) name:VGMusicTickNotification object:nil];
     [nc addObserver:self selector:@selector(applyBlur) name:UIApplicationDidBecomeActiveNotification object:nil];
+    for (NSNotificationName n in @[UIApplicationDidBecomeActiveNotification, UIApplicationWillResignActiveNotification, UIAccessibilityReduceMotionStatusDidChangeNotification])
+        [nc addObserver:self selector:@selector(updateCD) name:n object:nil];
     [self refresh];
     return self;
 }
@@ -861,6 +891,8 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 
 - (void)didMoveToWindow {
     [super didMoveToWindow];
+    [self applyCDShape];
+    [self updateCD];
     if (!self.window) { [self stopLink]; return; }
     if (_lyricsOn) [self startLink];
     [self applyBlur];
@@ -887,7 +919,11 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     CGFloat y = top + MAX(0, (H - top - bottomPad - total) / 2);
     CGRect artR = CGRectMake((W - A) / 2, y, A, A);   // set by centre and size, so a slide-in transform doesn't upset it
     self.artShadow.bounds = CGRectMake(0, 0, A, A); self.artShadow.center = CGPointMake(CGRectGetMidX(artR), CGRectGetMidY(artR));
-    self.art.frame = self.artShadow.bounds;
+    self.art.bounds = CGRectMake(0, 0, A, A); self.art.center = CGPointMake(A / 2, A / 2);   // bounds and centre (not frame) so the spin doesn't upset it
+    self.cdRing.frame = CGRectMake(0, 0, A, A);
+    CGFloat hole = A * 0.18;
+    self.cdHole.bounds = CGRectMake(0, 0, hole, hole); self.cdHole.center = CGPointMake(A / 2, A / 2); self.cdHole.layer.cornerRadius = hole / 2;
+    [self applyCDShape];
     self.lyricsBox.bounds = CGRectMake(0, 0, W - 40, A); self.lyricsBox.center = CGPointMake(W / 2, CGRectGetMidY(artR));
     self.lyricsTable.frame = self.lyricsBox.bounds;
     CGFloat inset = A / 2 - 20;
@@ -954,6 +990,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 
 - (void)tick {
     VGMusicPlayer *p = VGMusicPlayer.shared;
+    [self updateCD];   // playback can start after the last refresh, so check the disc on every tick as well
     if (self.scrubbing || !p.current) return;
     double d = p.duration, s = p.position;
     self.slider.value = d > 0 ? (float)MIN(1, s / d) : 0;
@@ -994,6 +1031,7 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
 - (void)showLyrics:(BOOL)on {
     if (on == _lyricsOn) return;
     _lyricsOn = on;
+    [self updateCD];
     if (on) [self startLink]; else [self stopLink];
     if (on) { self.lyricsBox.hidden = NO; self.searchB.hidden = NO; self.lyricsBox.transform = CGAffineTransformMakeTranslation(40, 0); [self ensureLyrics]; }
     [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
@@ -1154,7 +1192,79 @@ static void SetSymbol(UIButton *b, NSString *name, CGFloat size, UIColor *tint) 
     SetSymbol(self.sleepB, p.sleepActive ? @"moon.zzz.fill" : @"moon.zzz", 18, p.sleepActive ? VGOn : VGTertiary);
     self.prevB.enabled = self.nextB.enabled = p.queue.count > 0;
     if (_lyricsOn) [self ensureLyrics];
+    [self applyCDShape];
+    [self updateCD];
     [self tick];
+}
+
+#pragma mark CD cover
+
+- (BOOL)cdActive { return self.cdMode && VGCDAllowed(); }
+
+/// Puts the cover in its round or square shape right away (no animation).
+- (void)applyCDShape {
+    CGFloat A = self.art.bounds.size.width;
+    if (A < 1) return;
+    BOOL cd = [self cdActive];
+    CGFloat r = cd ? A / 2 : 20;
+    if (self.art.layer.cornerRadius != r) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        self.art.layer.cornerRadius = r; self.cdRing.layer.cornerRadius = cd ? A / 2 : 20;
+        [CATransaction commit];
+    }
+    self.cdRing.layer.cornerRadius = r;
+    self.cdRing.alpha = self.cdHole.alpha = cd ? 1 : 0;
+}
+
+- (void)toggleCD {
+    if (!VGCDAllowed()) return;
+    self.cdMode = !self.cdMode;
+    [NSUserDefaults.standardUserDefaults setBool:self.cdMode forKey:@"vgCDShape"];
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+    CGFloat A = self.art.bounds.size.width, to = self.cdMode ? A / 2 : 20, from = self.art.layer.presentationLayer ? self.art.layer.cornerRadius : to;
+    for (CALayer *L in @[self.art.layer, self.cdRing.layer]) {
+        CABasicAnimation *a = [CABasicAnimation animationWithKeyPath:@"cornerRadius"];
+        a.fromValue = @(from); a.toValue = @(to); a.duration = 0.4;
+        a.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [L addAnimation:a forKey:@"morph"];
+        L.cornerRadius = to;
+    }
+    [UIView animateWithDuration:0.35 animations:^{ self.cdRing.alpha = self.cdHole.alpha = self.cdMode ? 1 : 0; }];
+    if (!self.cdMode) {
+        // turn the cover back upright by the short way round
+        CALayer *L = self.art.layer;
+        CGFloat ang = [[L.presentationLayer valueForKeyPath:@"transform.rotation.z"] floatValue];
+        [L removeAnimationForKey:@"spin"];
+        L.speed = 1; L.timeOffset = 0; L.beginTime = 0;
+        CABasicAnimation *back = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+        back.fromValue = @(ang); back.toValue = @0; back.duration = 0.4;
+        back.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [L addAnimation:back forKey:@"unspin"];
+    }
+    [self updateCD];
+}
+
+/// The CD turns while music plays; it stops where it is when paused, hidden, in the background, or with Reduce Motion on.
+- (void)updateCD {
+    CALayer *L = self.art.layer;
+    BOOL want = [self cdActive] && VGMusicPlayer.shared.playing && self.window && !self.hidden && self.alpha > 0.01 && !_lyricsOn
+        && !UIAccessibilityIsReduceMotionEnabled() && UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    if (want) {
+        if (![L animationForKey:@"spin"]) {
+            [L removeAnimationForKey:@"unspin"];
+            CABasicAnimation *a = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+            a.fromValue = @0; a.toValue = @(2 * M_PI); a.duration = 14; a.repeatCount = HUGE_VALF; a.removedOnCompletion = NO;
+            L.speed = 1; L.timeOffset = 0; L.beginTime = 0;
+            [L addAnimation:a forKey:@"spin"];
+        } else if (L.speed == 0) {
+            CFTimeInterval paused = L.timeOffset;
+            L.speed = 1; L.timeOffset = 0; L.beginTime = 0;
+            L.beginTime = [L convertTime:CACurrentMediaTime() fromLayer:nil] - paused;
+        }
+    } else if (L.speed != 0 && [L animationForKey:@"spin"]) {
+        CFTimeInterval t = [L convertTime:CACurrentMediaTime() fromLayer:nil];
+        L.speed = 0; L.timeOffset = t;
+    }
 }
 
 @end

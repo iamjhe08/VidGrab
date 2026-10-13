@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)playerForStreamItem:(AVPlayerItem *)item video:(VGVideo *)video option:(nullable VGOption *)option audio:(BOOL)audio;
 /// A thin progress line along the bottom edge while the controls are hidden (Settings > Video player).
 @property (class, nonatomic) BOOL miniProgressEnabled;
+@property (class, nonatomic) BOOL statusPillEnabled;   // clock and phone heat in the corner while the buttons are hidden (sideways)
 /// YES when the stream is a main playlist the player can limit by quality without reloading.
 @property (nonatomic) BOOL streamMaster;
 /// Every quality that can be switched to at once (from the stream lookup): height -> items to play.

@@ -183,7 +183,7 @@ typedef NS_ENUM(NSInteger, VGSheetState) { VGSheetLoading, VGSheetError, VGSheet
     self.modeControl.selectedSegmentTintColor = VGAccent;
     self.modeControl.backgroundColor = VGSurface2;
     [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGSecondary, NSFontAttributeName: VGFont(15, UIFontWeightSemibold)} forState:UIControlStateNormal];
-    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.whiteColor, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGOnAccent, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
     [self.modeControl.heightAnchor constraintEqualToConstant:40].active = YES;
     [self.modeControl addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
     self.caption = [self label:VGFont(13, UIFontWeightMedium) color:VGTertiary lines:0];

@@ -6,6 +6,8 @@
 #import "VGSavedPlaylistsViewController.h"
 #import "VGEngine.h"
 #import "VGTheme.h"
+#import "VGCustomTheme.h"
+#import "VGThemeGalleryViewController.h"
 #import "VGActions.h"
 #import "VGQualityCell.h"
 #import "VGCrash.h"
@@ -277,7 +279,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     glow.gradient.startPoint = CGPointMake(0.85, 0.0);
     glow.gradient.endPoint = CGPointMake(-0.1, 1.2);
     glow.translatesAutoresizingMaskIntoConstraints = NO;
-    glow.hidden = VGPalette.current.flat;
+    glow.hidden = VGPalette.current.flat || VGPalette.selectedIndex == VGCustomThemeSlot;   // no colored glow on greys-only themes or on the custom theme
     [hero addSubview:glow];
 
     UILabel *h1 = [self label:VGFont(38, UIFontWeightHeavy) color:VGText lines:0];
@@ -520,7 +522,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
     self.modeControl.selectedSegmentTintColor = VGAccent;
     self.modeControl.backgroundColor = VGSurface2;
     [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGSecondary, NSFontAttributeName: VGFont(15, UIFontWeightSemibold)} forState:UIControlStateNormal];
-    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: UIColor.whiteColor, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
+    [self.modeControl setTitleTextAttributes:@{NSForegroundColorAttributeName: VGOnAccent, NSFontAttributeName: VGFont(15, UIFontWeightBold)} forState:UIControlStateSelected];
     [self.modeControl.heightAnchor constraintEqualToConstant:40].active = YES;
     [self.modeControl addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
     UIView *bottom = [self padded:[self vstack:@[self.modeControl, self.downloadButton, self.downloadCaption, self.notThisButton] spacing:10] top:18 bottom:0];
@@ -621,21 +623,7 @@ static NSString *const kClipDismissed = @"vgClipboardDismissed";
 
 /// Theme picker: Default, SP, SC, FL, PR.
 - (void)chooseTheme:(UIButton *)from {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Theme" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray<VGPalette *> *all = VGPalette.all;
-    for (NSInteger i = 0; i < (NSInteger)all.count; i++) {
-        NSString *name = all[i].title;
-        if (i == VGPalette.selectedIndex) name = [name stringByAppendingString:@"  \u2713"];
-        [a addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
-            if (i == VGPalette.selectedIndex) return;
-            [VGPalette selectIndex:i];
-            [NSNotificationCenter.defaultCenter postNotificationName:VGThemeDidChangeNotification object:nil];
-        }]];
-    }
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    a.popoverPresentationController.sourceView = from;
-    a.popoverPresentationController.sourceRect = from.bounds;
-    [self presentViewController:a animated:YES completion:nil];
+    [VGThemeGalleryViewController presentFrom:self];
 }
 
 - (void)chooseLanguage:(UIButton *)from {

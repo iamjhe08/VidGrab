@@ -170,6 +170,10 @@ extern NSString *const VGTaskFinishedNotification;
 - (void)repairItem:(VGItem *)item progress:(void (^)(double fraction))progress completion:(void (^)(NSString *_Nullable error))completion;
 - (void)copyErrorDetails:(void (^)(void))done;
 - (void)updateEngine:(void (^)(NSString *title, NSString *message))completion;
+/// Automatic engine updates (Settings > Download engine). On by default.
+@property (class, nonatomic) BOOL autoUpdateEnabled;
+/// Quietly looks for a newer engine (at most twice a day, never while downloading). The new engine starts working the next time VidGrab opens.
+- (void)autoUpdateIfNeeded;
 - (NSString *)engineVersion;
 - (long long)totalBytes;
 @end

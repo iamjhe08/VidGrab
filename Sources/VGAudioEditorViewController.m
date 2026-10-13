@@ -83,8 +83,8 @@
 
     UIButton *online = [self pillButton:@"Find cover art online" icon:@"magnifyingglass" action:@selector(findOnline)];
     online.backgroundColor = VGAccent;
-    online.tintColor = UIColor.whiteColor;
-    [online setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    online.tintColor = VGOnAccent;
+    [online setTitleColor:VGOnAccent forState:UIControlStateNormal];
     UIButton *photo = [self pillButton:@"Choose from Photos" icon:@"photo" action:@selector(pickPhoto)];
     UIButton *file = [self pillButton:@"Choose from Files" icon:@"folder" action:@selector(pickFile)];
     UIButton *clear = [self pillButton:@"Remove cover" icon:@"trash" action:@selector(removeArt)];

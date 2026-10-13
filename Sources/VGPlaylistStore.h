@@ -21,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (VGSavedPlaylist *)save:(VGVideo *)playlist;
 + (void)remove:(VGSavedPlaylist *)p;
 + (void)rename:(VGSavedPlaylist *)p to:(NSString *)title;
+/// For Backup: every saved playlist as plain data, and the way back (playlists already saved are kept as they are; returns how many were added).
++ (NSArray<NSDictionary *> *)exportDicts;
++ (NSUInteger)importDicts:(NSArray *)dicts;
 @end
 
 extern NSString *const VGSavedPlaylistsChanged;

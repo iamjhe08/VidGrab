@@ -12,7 +12,7 @@ static NSInteger gEpoch;
 
 @implementation VGLocalize
 
-+ (NSArray<NSString *> *)choices { return @[@"auto", @"en", @"zh-Hans", @"es", @"pt", @"ru", @"id", @"ja", @"hi"]; }
++ (NSArray<NSString *> *)choices { return @[@"auto", @"en", @"zh-Hans", @"es", @"pt", @"ru", @"id", @"ja", @"hi", @"ar"]; }
 
 + (NSString *)nameForChoice:(NSString *)c {
     if ([c isEqualToString:@"en"]) return @"English";
@@ -23,6 +23,7 @@ static NSInteger gEpoch;
     if ([c isEqualToString:@"id"]) return @"Bahasa Indonesia";
     if ([c isEqualToString:@"ja"]) return @"日本語";
     if ([c isEqualToString:@"hi"]) return @"हिन्दी";
+    if ([c isEqualToString:@"ar"]) return @"العربية";
     return @"Auto";
 }
 
@@ -39,7 +40,7 @@ static NSInteger gEpoch;
 + (NSString *)phoneLanguage {
     NSString *l = NSLocale.preferredLanguages.firstObject ?: @"en";
     if ([l hasPrefix:@"zh"]) return @"zh-Hans";
-    for (NSString *c in @[@"es", @"pt", @"ru", @"id", @"ja", @"hi"]) if ([l hasPrefix:c]) return c;
+    for (NSString *c in @[@"es", @"pt", @"ru", @"id", @"ja", @"hi", @"ar"]) if ([l hasPrefix:c]) return c;
     if ([l hasPrefix:@"in"]) return @"id";
     return @"en";
 }
@@ -157,8 +158,6 @@ static void swizzle(Class c, SEL orig, SEL repl, BOOL meta) {
         swizzle(UIAlertAction.class, @selector(actionWithTitle:style:handler:), @selector(vgl_actionWithTitle:style:handler:), YES);
         swizzle(UIAction.class, @selector(actionWithTitle:image:identifier:handler:), @selector(vgl_actionWithTitle:image:identifier:handler:), YES);
         swizzle(UIMenu.class, @selector(menuWithTitle:image:identifier:options:children:), @selector(vgl_menuWithTitle:image:identifier:options:children:), YES);
-        swizzle(UIListContentConfiguration.class, @selector(setText:), @selector(vgl_setText:), NO);
-        swizzle(UIListContentConfiguration.class, @selector(setSecondaryText:), @selector(vgl_setSecondaryText:), NO);
     });
 }
 
@@ -223,7 +222,4 @@ static void swizzle(Class c, SEL orig, SEL repl, BOOL meta) {
     return [self vgl_menuWithTitle:[VGLocalize translate:t] image:i identifier:id options:o children:c];
 }
 @end
-@implementation UIListContentConfiguration (VGL)
-- (void)vgl_setText:(NSString *)t { [self vgl_setText:[VGLocalize translate:t]]; }
-- (void)vgl_setSecondaryText:(NSString *)t { [self vgl_setSecondaryText:[VGLocalize translate:t]]; }
-@end
+

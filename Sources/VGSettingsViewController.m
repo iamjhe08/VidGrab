@@ -102,9 +102,9 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
 // The order rows are shown in. Each number is the row's original position, so the row code itself doesn't change.
 - (NSArray<NSNumber *> *)rowOrderForSection:(NSInteger)section {
     switch (section) {
-        case VGSectionEngine:   return @[@2, @3, @0, @1];       // the two everyday switches first; engine version and update last
+        case VGSectionEngine:   return @[@2, @3, @4, @0, @1];       // the two everyday switches first; engine version and update last
         case VGSectionFloat:    return @[@0, @3, @1, @2];       // each switch followed by its own test
-        case VGSectionGestures: return @[@0, @2, @1, @3, @4];   // each gesture followed by its own option
+        case VGSectionGestures: return @[@0, @2, @1, @3, @4, @5];   // each gesture followed by its own option
         default: return nil;
     }
 }
@@ -125,22 +125,22 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case VGSectionStorage: return 3;
-        case VGSectionEngine: return 4;
+        case VGSectionEngine: return 5;
         case VGSectionDownloads: return 7;
         case VGSectionFloat: return 4;
-        case VGSectionGestures: return 5;
+        case VGSectionGestures: return 6;
         case VGSectionSubtitles: return 6;
-        case VGSectionAudio: return 2;
+        case VGSectionAudio: return 3;
         case VGSectionInterface: return 2;
         case VGSectionLanguage: return 1;
         case VGSectionBackup: return 2;
         case VGSectionVault: return [VGVaultLock usesPasscode] ? 2 : 1;
-        default: return 4;   // About: version, GitHub, check for updates, credits
+        default: return 6;   // About: version, GitHub, jailbreak repo, sideload source, check for updates, credits
     }
 }
 
 - (NSString *)sectionTitle:(NSInteger)section {
-    return @[@"Language", @"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Interface", @"Private Vault 2.0", @"Storage", @"Backup", @"About"][section];
+    return @[@"Language", @"Download engine", @"Downloads", @"Floating progress", @"Video player", @"Auto subtitles", @"Audio", @"Interface", @"Private Vault 2.0", @"Storage", @"Backup and restore", @"About"][section];
 }
 
 // A small exclamation button in front of the section title; it opens and closes the section's note.
@@ -214,7 +214,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
     if (section == VGSectionAudio)
         return @"Crossfade: Gapless starts the next song the moment one ends. Seconds blend the end of one song into the start of the next. It only applies in the Library music player. With Find cover art online on, VidGrab looks up each new audio download (MP3, M4A, WAV, FLAC) on the internet and uses its album picture, and fills in a missing artist and album. If nothing matches, the picture from the video is kept. You can also search by hand: Library > hold an audio file > Edit audio info > Find cover art online. Only the song name and artist are sent for the search.";
     if (section == VGSectionBackup)
-        return @"Save your settings to a file, then load it after reinstalling or on another phone. It includes your switches, ad blocker sites and browser favorites. Your downloads, vault passcode and website sign-ins are never included.";
+        return @"Back up saves your settings, theme, language, browser favorites and saved playlists to one file. Restore loads that file after reinstalling or on another phone. Your downloaded videos and audio, vault passcode and website sign-ins are never included, so they can't be restored from a backup.";
     if (section == VGSectionVault)
         return @"Choose a passcode, Face ID, or both. With both, either one opens the vault, so you're never locked out.";
     return nil;
@@ -229,18 +229,19 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
 }
 
 - (UITableViewCell *)cellWithTitle:(NSString *)title value:(NSString *)value icon:(NSString *)icon tint:(UIColor *)tint {
+    // Plain cell labels (not a content configuration): iOS 27.2 beta throws "Unknown style" on the configuration route.
     UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-    UIListContentConfiguration *cfg = [UIListContentConfiguration valueCellConfiguration];
-    cfg.text = title;
-    cfg.secondaryText = value;
-    cfg.textProperties.color = tint ?: VGText;
-    cfg.textProperties.font = VGFont(16, UIFontWeightMedium);
-    cfg.secondaryTextProperties.color = VGSecondary;
+    c.textLabel.text = VGT(title);
+    c.textLabel.textColor = tint ?: VGText;
+    c.textLabel.font = VGFont(16, UIFontWeightMedium);
+    c.detailTextLabel.text = value ? VGT(value) : nil;
+    c.detailTextLabel.textColor = VGSecondary;
+    c.detailTextLabel.font = [UIFont systemFontOfSize:17];
     if (icon) {
-        cfg.image = [UIImage systemImageNamed:icon];
-        cfg.imageProperties.tintColor = tint ?: VGAccent;
+        UIImage *img = [[UIImage systemImageNamed:icon] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        c.imageView.image = img;
+        c.imageView.tintColor = tint ?: VGAccent;
     }
-    c.contentConfiguration = cfg;
     c.backgroundColor = VGSurface;
     return c;
 }
@@ -332,6 +333,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
             c.selectionStyle = UITableViewCellSelectionStyleNone;
             return c;
         }
+        if (ip.row == 4) {
+            UITableViewCell *c = [self cellWithTitle:@"Update engine automatically" value:nil icon:@"arrow.triangle.2.circlepath.circle" tint:nil];
+            UISwitch *sw = [UISwitch new];
+            sw.on = VGEngine.autoUpdateEnabled;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:@selector(autoEngineChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
+            return c;
+        }
         if (ip.row == 3) {
             UITableViewCell *c = [self cellWithTitle:@"Keep downloading in background" value:nil icon:@"moon.zzz" tint:nil];
             UISwitch *sw = [UISwitch new];
@@ -371,6 +382,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
         if (ip.row == 2) {
             UITableViewCell *c = [self cellWithTitle:@"Brightness side" value:VGPlayerGestures.brightnessOnRight ? @"Right" : @"Left" icon:@"arrow.left.arrow.right" tint:nil];
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return c;
+        }
+        if (ip.row == 5) {
+            UITableViewCell *c = [self cellWithTitle:@"Clock and temperature" value:nil icon:@"clock" tint:nil];
+            UISwitch *sw = [UISwitch new];
+            sw.on = VGPlayerViewController.statusPillEnabled;
+            sw.onTintColor = VGAccent;
+            [sw addTarget:self action:@selector(statusPillChanged:) forControlEvents:UIControlEventValueChanged];
+            c.accessoryView = sw;
+            c.selectionStyle = UITableViewCellSelectionStyleNone;
             return c;
         }
         if (ip.row == 4) {
@@ -439,6 +460,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
         c.selectionStyle = UITableViewCellSelectionStyleNone;
         return c;
     }
+    if (ip.section == VGSectionAudio && ip.row == 2) {
+        UITableViewCell *c = [self cellWithTitle:@"Spinning CD cover" value:nil icon:@"opticaldisc" tint:nil];
+        UISwitch *sw = [UISwitch new];
+        sw.on = ![NSUserDefaults.standardUserDefaults objectForKey:@"vgCDEnabled"] || [NSUserDefaults.standardUserDefaults boolForKey:@"vgCDEnabled"];
+        sw.onTintColor = VGAccent;
+        [sw addTarget:self action:@selector(cdCoverChanged:) forControlEvents:UIControlEventValueChanged];
+        c.accessoryView = sw;
+        c.selectionStyle = UITableViewCellSelectionStyleNone;
+        return c;
+    }
     if (ip.section == VGSectionAudio) {
         UITableViewCell *c = [self cellWithTitle:@"Find cover art online" value:nil icon:@"photo.on.rectangle" tint:nil];
         UISwitch *sw = [UISwitch new];
@@ -487,7 +518,7 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
         return c;
     }
     if (ip.section == VGSectionBackup) {
-        UITableViewCell *c = [self cellWithTitle:ip.row == 0 ? @"Export settings" : @"Import settings" value:nil
+        UITableViewCell *c = [self cellWithTitle:ip.row == 0 ? @"Back up" : @"Restore" value:nil
                                             icon:ip.row == 0 ? @"square.and.arrow.up" : @"square.and.arrow.down" tint:nil];
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return c;
@@ -498,12 +529,26 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return c;
     }
-    if (ip.row == 3) {
+    if (ip.row == 5) {
         UITableViewCell *c = [self cellWithTitle:@"Credits" value:@"yt-dlp, FFmpeg, Whisper and more" icon:@"heart.text.square" tint:nil];
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return c;
     }
-    if (ip.row == 2) return [self cellWithTitle:@"Check for app updates" value:nil icon:@"arrow.down.app" tint:VGAccent];
+    if (ip.row == 4) return [self cellWithTitle:@"Check for app updates" value:nil icon:@"arrow.down.app" tint:VGAccent];
+    if (ip.row == 2 || ip.row == 3) {
+        BOOL repo = ip.row == 2;
+        NSString *url = repo ? @"https://iamjhe08.github.io/repo/" : @"https://iamjhe08.github.io/repo/vidgrab-source.json";
+        UITableViewCell *c = [self cellWithTitle:repo ? @"Jailbreak repo" : @"Sideload source" value:url icon:repo ? @"shippingbox" : @"arrow.down.app" tint:nil];
+        UIButton *cp = [UIButton buttonWithType:UIButtonTypeSystem];
+        [cp setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
+        cp.tintColor = VGSecondary;
+        cp.frame = CGRectMake(0, 0, 40, 40);
+        cp.accessibilityLabel = @"Copy";
+        cp.tag = ip.row;
+        [cp addTarget:self action:@selector(copySource:) forControlEvents:UIControlEventTouchUpInside];
+        c.accessoryView = cp;
+        return c;
+    }
     if (ip.row == 1) {
         UITableViewCell *c = [self cellWithTitle:@"GitHub" value:@"@iamjhe08" icon:@"chevron.left.forwardslash.chevron.right" tint:nil];
         c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -541,13 +586,35 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
     else if (ip.section == VGSectionBackup && row == 1) [VGSettingsBackup importFrom:self completion:^{ [tv reloadData]; }];
     else if (ip.section == VGSectionVault && row == 0) [VGVaultLock changeLockFrom:self completion:^{ [tv reloadData]; }];
     else if (ip.section == VGSectionVault && row == 1) [VGVaultLock changePasscodeFrom:self completion:^{ [tv reloadData]; }];
-    else if (ip.section == VGSectionAbout && row == 3) [self.navigationController pushViewController:[VGCreditsViewController new] animated:YES];
-    else if (ip.section == VGSectionAbout && row == 2) [VGUpdater checkNowFrom:self];
+    else if (ip.section == VGSectionAbout && row == 5) [self.navigationController pushViewController:[VGCreditsViewController new] animated:YES];
+    else if (ip.section == VGSectionAbout && row == 4) [VGUpdater checkNowFrom:self];
+    else if (ip.section == VGSectionAbout && (row == 2 || row == 3)) [self copyLinkForRow:row];
     else if (ip.section == VGSectionAbout && row == 1)
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/iamjhe08"] options:@{} completionHandler:nil];
 }
 
 #pragma mark Actions
+
+- (void)cdCoverChanged:(UISwitch *)sw {
+    [NSUserDefaults.standardUserDefaults setBool:sw.on forKey:@"vgCDEnabled"];
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+}
+
+- (void)copyLinkForRow:(NSInteger)row {
+    UIPasteboard.generalPasteboard.string = row == 2 ? @"https://iamjhe08.github.io/repo/" : @"https://iamjhe08.github.io/repo/vidgrab-source.json";
+    [[UINotificationFeedbackGenerator new] notificationOccurred:UINotificationFeedbackTypeSuccess];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:VGSectionAbout]];
+    UIButton *b = [cell.accessoryView isKindOfClass:UIButton.class] ? (UIButton *)cell.accessoryView : nil;
+    if (!b) return;
+    [b setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+    b.tintColor = VGOn;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [b setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
+        b.tintColor = VGSecondary;
+    });
+}
+
+- (void)copySource:(UIButton *)b { [self copyLinkForRow:b.tag]; }
 
 - (void)clipboardChanged:(UISwitch *)sw {
     [NSUserDefaults.standardUserDefaults setBool:sw.on forKey:@"vgClipboardCheck"];
@@ -687,6 +754,16 @@ typedef NS_ENUM(NSInteger, VGSection) { VGSectionLanguage, VGSectionEngine, VGSe
     } else {
         [self askDownload:q turnOffIfCancelled:NO];
     }
+}
+
+- (void)autoEngineChanged:(UISwitch *)sw {
+    VGEngine.autoUpdateEnabled = sw.on;
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+}
+
+- (void)statusPillChanged:(UISwitch *)sw {
+    VGPlayerViewController.statusPillEnabled = sw.on;
+    [[UISelectionFeedbackGenerator new] selectionChanged];
 }
 
 - (void)miniBarChanged:(UISwitch *)sw {

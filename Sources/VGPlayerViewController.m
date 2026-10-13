@@ -853,6 +853,12 @@ static UILabel *TimeLabel(NSTextAlignment align) {
 @property (nonatomic, strong) AVRoutePickerView *routeButton;
 @property (nonatomic, strong) UIButton *qualityLabel;
 @property (nonatomic, strong) UIButton *heatPill;
+@property (nonatomic, strong) UIVisualEffectView *statusPill;   // landscape, controls hidden: phone heat and the time
+@property (nonatomic, strong) UILabel *statusHeat, *statusClock;
+@property (nonatomic, strong) UIImageView *statusIcon;
+@property (nonatomic, strong) NSLayoutConstraint *statusTop;
+@property (nonatomic) BOOL statusShown;
+@property (nonatomic) NSInteger statusDimToken;   // the pill softens a few seconds after it appears
 @property (nonatomic) CFTimeInterval lastHeatCheck;
 @property (nonatomic, assign) NSUInteger switchToken;
 @property (nonatomic, assign) BOOL switchPending;
@@ -918,6 +924,11 @@ static UILabel *TimeLabel(NSTextAlignment align) {
     return [d objectForKey:kMiniBarKey] ? [d boolForKey:kMiniBarKey] : YES;
 }
 + (void)setMiniProgressEnabled:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:kMiniBarKey]; }
++ (BOOL)statusPillEnabled {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return [d objectForKey:@"vgStatusPill"] ? [d boolForKey:@"vgStatusPill"] : YES;
+}
++ (void)setStatusPillEnabled:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgStatusPill"]; }
 
 + (instancetype)playerFor:(VGItem *)item {
     VGPlayerViewController *p = [VGPlayerViewController new];
@@ -1083,6 +1094,7 @@ static char kSubAssetKey;
     } completion:^(id<UIViewControllerTransitionCoordinatorContext> c) {
         [self layoutVideoAnimated:NO];
         [self rebuildMenus];
+        [self updateStatusPillAnimated:YES];
         [self scheduleHide];   // turned sideways: the controls hide after a moment (upright they stay)
     }];
 }
@@ -1536,6 +1548,7 @@ static char kSubAssetKey;
         [self setNeedsUpdateOfHomeIndicatorAutoHidden];
     } completion:nil];
     [self applyMiniBarAnimated:animated];
+    [self updateStatusPillAnimated:animated];
 }
 
 - (void)showControls {
@@ -1947,6 +1960,96 @@ static char kSubAssetKey;
     }];
 }
 
+#pragma mark Status pill
+
+/// Built the first time it is needed: dark glass (readable over bright or dark video) in the upper right corner.
+- (void)ensureStatusPill {
+    if (self.statusPill) return;
+    UIVisualEffectView *v = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark]];
+    v.translatesAutoresizingMaskIntoConstraints = NO;
+    v.userInteractionEnabled = NO;
+    v.clipsToBounds = YES;
+    v.layer.cornerRadius = 16; v.layer.cornerCurve = kCACornerCurveContinuous;
+    v.layer.borderWidth = 1; v.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
+    UIView *tint = [UIView new];   // an extra dark layer so a very bright picture can't wash the text out
+    tint.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    tint.translatesAutoresizingMaskIntoConstraints = NO;
+    [v.contentView addSubview:tint];
+    self.statusIcon = [UIImageView new];
+    self.statusIcon.contentMode = UIViewContentModeScaleAspectFit;
+    self.statusHeat = [UILabel new]; self.statusHeat.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightBold];
+    UIView *dot = [UIView new]; dot.backgroundColor = [UIColor colorWithWhite:1 alpha:0.35]; dot.layer.cornerRadius = 1.5;
+    self.statusClock = [UILabel new]; self.statusClock.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightBold]; self.statusClock.textColor = UIColor.whiteColor;
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusIcon, self.statusHeat, dot, self.statusClock]];
+    row.axis = UILayoutConstraintAxisHorizontal; row.alignment = UIStackViewAlignmentCenter; row.spacing = 6;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [row setCustomSpacing:8 afterView:self.statusHeat]; [row setCustomSpacing:8 afterView:dot];
+    [v.contentView addSubview:row];
+    [self.view addSubview:v];
+    self.statusTop = [v.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:-70];
+    [NSLayoutConstraint activateConstraints:@[
+        [tint.leadingAnchor constraintEqualToAnchor:v.contentView.leadingAnchor], [tint.trailingAnchor constraintEqualToAnchor:v.contentView.trailingAnchor],
+        [tint.topAnchor constraintEqualToAnchor:v.contentView.topAnchor], [tint.bottomAnchor constraintEqualToAnchor:v.contentView.bottomAnchor],
+        [row.leadingAnchor constraintEqualToAnchor:v.contentView.leadingAnchor constant:12], [row.trailingAnchor constraintEqualToAnchor:v.contentView.trailingAnchor constant:-12],
+        [row.topAnchor constraintEqualToAnchor:v.contentView.topAnchor constant:7], [row.bottomAnchor constraintEqualToAnchor:v.contentView.bottomAnchor constant:-7],
+        [self.statusIcon.widthAnchor constraintEqualToConstant:14], [self.statusIcon.heightAnchor constraintEqualToConstant:14],
+        [dot.widthAnchor constraintEqualToConstant:3], [dot.heightAnchor constraintEqualToConstant:3],
+        self.statusTop,
+        [v.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-4],
+    ]];
+    v.alpha = 0;
+    self.statusPill = v;
+    [self refreshStatusPill];
+    [self refreshStatusClock];
+}
+
+- (void)refreshStatusPill {
+    if (!self.statusPill) return;
+    UIColor *tint = self.heatPill.tintColor ?: UIColor.whiteColor;
+    self.statusHeat.text = [self.heatPill titleForState:UIControlStateNormal] ?: @"";
+    self.statusHeat.textColor = tint;
+    self.statusIcon.image = [UIImage systemImageNamed:@"thermometer.medium" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightBold]];
+    self.statusIcon.tintColor = tint;
+}
+
+/// 12-hour clock, like 4:35 PM.
+- (void)refreshStatusClock {
+    static NSDateFormatter *f;
+    if (!f) { f = [NSDateFormatter new]; f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; f.dateFormat = @"h:mm a"; }
+    NSString *t = [f stringFromDate:NSDate.date];
+    if (![self.statusClock.text isEqualToString:t]) self.statusClock.text = t;
+}
+
+/// Shown only sideways while the buttons are hidden: slides down from the top edge; slides back up when the buttons return.
+- (void)updateStatusPillAnimated:(BOOL)animated {
+    BOOL landscape = self.view.bounds.size.width > self.view.bounds.size.height;
+    BOOL show = VGPlayerViewController.statusPillEnabled && landscape && !self.controlsVisible && self.view.window;
+    if (show == self.statusShown && self.statusPill) return;
+    if (!show && !self.statusPill) return;
+    self.statusShown = show;
+    [self ensureStatusPill];
+    if (show) { [self refreshHeat]; [self refreshStatusPill]; [self refreshStatusClock]; [self.view bringSubviewToFront:self.statusPill]; }
+    self.statusTop.constant = show ? 8 : -70;
+    [self.view layoutIfNeeded];   // settle first, so only the move is animated
+    self.statusTop.constant = show ? 8 : -70;
+    NSInteger token = ++self.statusDimToken;   // a newer show or hide cancels an older dim
+    [UIView animateWithDuration:animated ? (show ? 0.42 : 0.3) : 0 delay:0 usingSpringWithDamping:show ? 0.82 : 1 initialSpringVelocity:0
+                        options:UIViewAnimationOptionBeginFromCurrentState animations:^{
+        self.statusPill.alpha = show ? 1 : 0;
+        [self.view layoutIfNeeded];
+    } completion:nil];
+    if (show) {
+        // A few seconds after it appears the pill softens, so it doesn't distract from the video.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (token != self.statusDimToken || !self.statusShown) return;
+            [UIView animateWithDuration:0.8 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:^{
+                self.statusPill.alpha = 0.4;
+            } completion:nil];
+        });
+    }
+}
+
+
 /// Device heat: the real chip temperature when iOS lets the app read it, otherwise iOS's own heat level.
 - (void)refreshHeat {
     NSString *text; UIColor *tint; float c = VGCPUTemperature();
@@ -1971,7 +2074,8 @@ static char kSubAssetKey;
 
 - (void)tickWithPosition:(double)pos {
     if (self.livePending && self.keptPlayer.timeControlStatus != AVPlayerTimeControlStatusPaused) [self.keptPlayer pause];
-    if (CACurrentMediaTime() - self.lastHeatCheck > 3) { self.lastHeatCheck = CACurrentMediaTime(); [self refreshHeat]; }
+    if (CACurrentMediaTime() - self.lastHeatCheck > 3) { self.lastHeatCheck = CACurrentMediaTime(); [self refreshHeat]; [self refreshStatusPill]; }
+    if (self.statusShown) [self refreshStatusClock];
     if (self.streamVideo && !self.streamFailed && self.keptPlayer.currentItem.status == AVPlayerItemStatusFailed) {
         self.streamFailed = YES;
         UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Couldn't play this stream"

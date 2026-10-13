@@ -1753,6 +1753,29 @@ static NSString *resolutionLabel(AVAssetTrack *track) {
 
 #pragma mark Engine update
 
++ (BOOL)autoUpdateEnabled {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return [d objectForKey:@"vgEngineAuto"] ? [d boolForKey:@"vgEngineAuto"] : YES;
+}
++ (void)setAutoUpdateEnabled:(BOOL)on { [NSUserDefaults.standardUserDefaults setBool:on forKey:@"vgEngineAuto"]; }
+
+- (void)autoUpdateIfNeeded {
+    if (!VGEngine.autoUpdateEnabled || self.activeCount) return;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSDate *last = [d objectForKey:@"vgEngineAutoLast"];
+    if (last && -last.timeIntervalSinceNow < 12 * 3600) return;
+    static BOOL running;
+    if (running) return;
+    running = YES;
+    VGPython *py = [VGPython shared];
+    [py call:@"vgboot" function:@"update_engine" args:@[py.engineDir, py.engineVersion ?: @"0"] completion:^(NSDictionary *r, NSString *error) {
+        running = NO;
+        if (!r || ![r[@"status"] isKindOfClass:NSString.class]) return;   // no connection or a hiccup: try again next time
+        NSString *st = r[@"status"];
+        if ([st isEqualToString:@"current"] || [st isEqualToString:@"updated"]) [d setObject:NSDate.date forKey:@"vgEngineAutoLast"];
+    }];
+}
+
 - (void)updateEngine:(void (^)(NSString *, NSString *))completion {
     if (self.activeCount) { completion(@"Downloads in progress", @"Wait for your downloads to finish, then update the engine."); return; }
     VGPython *py = [VGPython shared];

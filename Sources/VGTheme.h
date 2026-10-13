@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+@class VGThemeSpec;
 
 // VidGrab's own palette: near-black canvas, coral-pink accent (matches the app icon).
 static inline UIColor *VGHex(unsigned int h) {
@@ -22,12 +23,17 @@ static inline UIColor *VGHex(unsigned int h) {
 @property (nonatomic, readonly) UIColor *logoColor;
 /// When set, primary buttons use the accent color with this text color (instead of white or grey).
 @property (nonatomic, readonly) UIColor *onAccent;
+@property (nonatomic, readonly) UIColor *buttonBg, *buttonFg;
 @property (nonatomic, readonly) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 + (VGPalette *)current;
 + (NSArray<VGPalette *> *)all;
 /// Index of the saved theme (0 = Default).
 + (NSInteger)selectedIndex;
 + (void)selectIndex:(NSInteger)index;
+@end
+@interface VGPalette (Custom)
+/// Turns a saved custom theme into a palette. Used by the app, the gallery and the editor preview alike.
++ (VGPalette *)paletteForSpec:(VGThemeSpec *)spec;
 @end
 extern NSString *const VGThemeDidChangeNotification;
 
@@ -46,6 +52,8 @@ extern NSString *const VGThemeDidChangeNotification;
 #define VGOn          ([VGPalette current].flat ? VGHex(0xF2F2F2) : [VGPalette current].accent)
 /// The "off" color on the dark player (white normally, dim grey on the greys-only themes so the "on" white stands out).
 #define VGOffOnPlayer ([VGPalette current].flat ? VGHex(0x6A6A6A) : UIColor.whiteColor)
+/// Text or icons drawn on top of the accent color.
+#define VGOnAccent    ([VGPalette current].onAccent ?: UIColor.whiteColor)
 #define VGTabBarBg    ([VGPalette current].tabBar)
 #define VGListBg      ([VGPalette current].listBackground)
 #define VGSelectedBg  ([VGPalette current].selectedCell)
@@ -99,3 +107,8 @@ UIImage *VGThemedIcon(void);
 UIColor *VGCarbonColor(void);
 /// The accent as a CSS color for web pages, e.g. "rgba(255,61,104,0.96)".
 NSString *VGAccentCSS(void);
+
+/// Rebuilds the custom slot from the applied custom theme and clears cached pictures and icons.
+void VGResetCustomThemeCache(void);
+/// The colors a primary button uses in a palette (shared by real buttons and previews).
+void VGPrimaryButtonColors(VGPalette *palette, UIColor **background, UIColor **foreground);

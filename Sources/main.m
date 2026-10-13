@@ -2,6 +2,7 @@
 #import "VGEngine.h"
 #import "VGUpdater.h"
 #import "VGTheme.h"
+#import "VGCustomTheme.h"
 #import "VGLocalize.h"
 #import "VGHomeViewController.h"
 #import "VGDownloadsViewController.h"
@@ -44,7 +45,7 @@
         [tab configureWithTransparentBackground];
         tab.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
         tab.backgroundColor = [VGTabBarBg colorWithAlphaComponent:0.50];
-        tab.shadowColor = [UIColor colorWithWhite:1 alpha:0.12];
+        tab.shadowColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.12];
     }
     UITabBarItemAppearance *item = [UITabBarItemAppearance new];
     item.normal.iconColor = VGTertiary;
@@ -63,7 +64,7 @@
     nav.shadowColor = UIColor.clearColor;
     if (VGPalette.current.carbon) {
         [nav configureWithTransparentBackground];
-        nav.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
+        nav.backgroundEffect = [UIBlurEffect effectWithStyle:VGLight ? UIBlurEffectStyleSystemThinMaterialLight : UIBlurEffectStyleSystemThinMaterialDark];
         nav.backgroundColor = [VGBackground colorWithAlphaComponent:0.45];
         nav.shadowColor = UIColor.clearColor;
     }
@@ -71,7 +72,7 @@
         [nav configureWithTransparentBackground];
         nav.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
         nav.backgroundColor = [VGBackground colorWithAlphaComponent:0.55];
-        nav.shadowColor = [UIColor colorWithWhite:1 alpha:0.08];
+        nav.shadowColor = [UIColor colorWithWhite:(VGLight ? 0 : 1) alpha:0.08];
     }
     nav.titleTextAttributes = @{NSForegroundColorAttributeName: VGText, NSFontAttributeName: VGFont(17, UIFontWeightBold)};
     nav.largeTitleTextAttributes = @{NSForegroundColorAttributeName: VGText, NSFontAttributeName: VGFont(32, UIFontWeightHeavy)};
@@ -148,6 +149,7 @@
     UIViewController *root = self.window.rootViewController;
     if ([root isKindOfClass:VGSidebarController.class]) [(VGSidebarController *)root retheme];
     [self.tabs setNeedsStatusBarAppearanceUpdate];
+    [self.window.rootViewController setNeedsStatusBarAppearanceUpdate];   // light themes get dark status bar icons, dark themes get light ones
     [self.pill removeFromSuperview];
     self.pill = [VGProgressPill new];
     [self.pill addTarget:self action:@selector(openDownloads) forControlEvents:UIControlEventTouchUpInside];
@@ -156,6 +158,8 @@
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     [VGLocalize start];
+    [VGThemeStore migrateIfNeeded];   // a custom theme from the first 1.3.6c build moves into the new theme list
+    VGResetCustomThemeCache();
     [VGCrash install];
     // If the last run ended badly while preparing the ad blocker, turn it off so the app can open.
     if ([[VGCrash previousLastStep] hasPrefix:@"adblock"]) [VGBlocker shared].enabled = NO;
@@ -178,10 +182,12 @@
     // Look for a newer VidGrab on GitHub every time the app opens or comes back to the front.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [VGUpdater checkQuietlyFrom:self.tabs];
+        [[VGEngine shared] autoUpdateIfNeeded];
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification object:nil
                                                          queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                         [VGUpdater checkQuietlyFrom:self.tabs];
+                        [[VGEngine shared] autoUpdateIfNeeded];
             });
         }];
     });
@@ -198,7 +204,10 @@
         self.pill.suppressed = [n.object boolValue] || self.tabs.selectedIndex == 1;
     }];
     [NSNotificationCenter.defaultCenter addObserverForName:VGThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
-                                                usingBlock:^(NSNotification *n) { [self rebuildForTheme]; }];
+                                                usingBlock:^(NSNotification *n) {
+        // Wait until the picker sheet has finished closing, and rebuild with animations off, so nothing is changed in the middle of its closing animation.
+        dispatch_async(dispatch_get_main_queue(), ^{ [UIView performWithoutAnimation:^{ [self rebuildForTheme]; }]; });
+    }];
     // A link that arrived while VidGrab was in the background and needed a choice waits until you open the app.
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(NSNotification *n) {

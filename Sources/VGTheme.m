@@ -1,4 +1,5 @@
 #import "VGTheme.h"
+#import "VGCustomTheme.h"
 #import <CoreImage/CoreImage.h>
 
 NSString *const VGThemeDidChangeNotification = @"VGThemeDidChangeNotification";
@@ -8,7 +9,7 @@ NSString *const VGThemeDidChangeNotification = @"VGThemeDidChangeNotification";
 @property (nonatomic, readwrite) UIColor *accent, *accent2, *accentSoft, *tabBar, *listBackground, *selectedCell, *editButton;
 @property (nonatomic, readwrite) NSString *title, *detail;
 @property (nonatomic, readwrite) BOOL glass, light, flat, carbon;
-@property (nonatomic, readwrite) UIColor *logoColor, *onAccent;
+@property (nonatomic, readwrite) UIColor *logoColor, *onAccent, *buttonBg, *buttonFg;
 @property (nonatomic, readwrite) UIColor *playerBackground, *playerSurface, *playerStroke, *playerSecondary;
 @end
 
@@ -75,7 +76,30 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
                  0x22101C, 0x331828, 0x45223A, 0x5A2E4A, 0xD4A8C0, 0x9A6C86, 0xEC4899, 0xF472B6, 0xFBCFE8, 0x1B0C16, 0x1F0E19, 0x4A2040, 0x573052);
         pf.onAccent = UIColor.whiteColor;
         a = [a arrayByAddingObject:pf];
+        // The custom theme slot (number 11, VGCustomThemeSlot). Filled in from the custom theme the person applied.
+        a = [a arrayByAddingObject:[VGPalette new]];
+        NSAssert(a.count == VGCustomThemeSlot + 1, @"custom theme slot moved");
+        // New presets go after the custom slot so saved theme numbers never change.
+        VGPalette *mid = make(@"Midnight Blue", @"",
+                 0x070B1A, 0x0F1629, 0x18213B, 0x27345A, 0xA5B0CC, 0x6A759A, 0x4C8DFF, 0x7AB0FF, 0xA9C8FF, 0x060916, 0x090E1E, 0x16264A, 0x25325A);
+        mid.onAccent = UIColor.whiteColor;
+        VGPalette *em = make(@"Emerald", @"",
+                 0x06100C, 0x0E1B15, 0x16291F, 0x24412F, 0x9FB8AB, 0x65806F, 0x10B981, 0x34D399, 0x86EFC0, 0x050D0A, 0x08130E, 0x12301F, 0x234232);
+        em.onAccent = VGHex(0x04120C);
+        VGPalette *sun = make(@"Sunset", @"",
+                 0x140B0A, 0x201210, 0x2E1A16, 0x45261E, 0xC9A89C, 0x8F6F63, 0xFF7A45, 0xFFA94D, 0xFFC9A8, 0x0F0807, 0x120A08, 0x3A1D14, 0x4A2A20);
+        sun.onAccent = VGHex(0x1A0B05);
+        a = [a arrayByAddingObjectsFromArray:@[mid, em, sun]];
+        // Short descriptions for the gallery. Names stay as they were.
+        NSDictionary *details = @{@"Default": @"VidGrab's own look", @"SP": @"Dark grey, green accent", @"SC": @"Dark grey, orange accent",
+            @"FL": @"Near-black, blue accent", @"PR": @"Purple glass, violet accent", @"GD": @"True black, gold accent",
+            @"PB": @"Pitch black, greys only", @"CB": @"Carbon fiber, steel greys", @"MBRG": @"Matte black, rose gold",
+            @"MC": @"Graphite, crimson", @"PF": @"Deep plum, hot pink", @"Midnight Blue": @"Deep navy, blue accent",
+            @"Emerald": @"Dark green, emerald accent", @"Sunset": @"Warm dark, orange accent"};
+        for (VGPalette *p in a) if (p.title.length && details[p.title]) p.detail = details[p.title];
     });
+    static BOOL filled;
+    if (!filled) { filled = YES; VGResetCustomThemeCache(); }   // fill the custom slot once the list exists
     return a;
 }
 
@@ -91,7 +115,91 @@ static VGPalette *make(NSString *title, NSString *detail, unsigned bg, unsigned 
 
 + (VGPalette *)current { return self.all[self.selectedIndex]; }
 
+- (void)adopt:(VGPalette *)o {
+    self.background = o.background; self.surface = o.surface; self.surface2 = o.surface2; self.stroke = o.stroke;
+    self.text = o.text; self.secondary = o.secondary; self.tertiary = o.tertiary;
+    self.accent = o.accent; self.accent2 = o.accent2; self.accentSoft = o.accentSoft; self.tabBar = o.tabBar;
+    self.listBackground = o.listBackground; self.selectedCell = o.selectedCell; self.editButton = o.editButton;
+    self.title = o.title; self.detail = o.detail;
+    self.glass = o.glass; self.light = o.light; self.flat = o.flat; self.carbon = o.carbon;
+    self.logoColor = o.logoColor; self.onAccent = o.onAccent; self.buttonBg = o.buttonBg; self.buttonFg = o.buttonFg;
+    self.playerBackground = o.playerBackground; self.playerSurface = o.playerSurface; self.playerStroke = o.playerStroke; self.playerSecondary = o.playerSecondary;
+}
+
+/// One place that turns a custom theme description into the colors the app uses. The gallery, the editor preview and the app all call this.
++ (VGPalette *)paletteForSpec:(VGThemeSpec *)spec {
+    VGPalette *b = self.all[(spec.base >= 0 && spec.base < (NSInteger)self.all.count && spec.base != VGCustomThemeSlot) ? spec.base : 0];
+    VGPalette *p = [VGPalette new];
+    [p adopt:b];
+    p.title = spec.name; p.detail = @"";
+    UIColor *white = UIColor.whiteColor, *black = UIColor.blackColor;
+    NSString *mode = spec.bgMode;
+    BOOL photo = [mode isEqual:@"photo"] && spec.hasPhoto;
+    BOOL image = photo || [mode isEqual:@"gradient"] || [mode isEqual:@"texture"];
+    p.carbon = image;
+    // The color the pages sit on, used to work out surfaces and text.
+    UIColor *effective;
+    BOOL derive;
+    if ([mode isEqual:@"gradient"]) { effective = VGMixColors(VGHex(spec.grad1), VGHex(spec.grad2), 0.5); derive = YES; }
+    else if (photo) { effective = VGHex(0x0B0B0D); derive = YES; }
+    else if ([mode isEqual:@"texture"]) {
+        BOOL carbonAsBase = [spec.texture isEqual:@"carbon"];
+        effective = carbonAsBase ? b.background : VGHex(spec.bgColor);
+        derive = carbonAsBase ? !b.carbon : (VGHexOf(effective) != VGHexOf(b.background) || !b.carbon);
+    } else { effective = VGHex(spec.bgColor); derive = VGHexOf(effective) != VGHexOf(b.background); }
+    if (derive) {
+        CGFloat r = 0, g = 0, bl = 0, al = 0; [effective getRed:&r green:&g blue:&bl alpha:&al];
+        BOOL light = !photo && (0.299 * r + 0.587 * g + 0.114 * bl) > 0.6;
+        p.background = effective; p.light = light;
+        if (light) {
+            p.surface = VGMixColors(effective, black, 0.04); p.surface2 = VGMixColors(effective, black, 0.09); p.stroke = VGMixColors(effective, black, 0.15);
+            p.text = VGHex(0x111114); p.secondary = VGMixColors(effective, black, 0.62); p.tertiary = VGMixColors(effective, black, 0.42);
+            p.tabBar = VGMixColors(effective, white, 0.5); p.listBackground = VGMixColors(effective, black, 0.02); p.editButton = VGMixColors(effective, black, 0.12);
+            p.playerBackground = VGHex(0x0A0A0D); p.playerSurface = VGHex(0x15151B); p.playerStroke = VGHex(0x2A2A34); p.playerSecondary = VGHex(0xA3A3AE);
+        } else {
+            p.surface = VGMixColors(effective, white, 0.07); p.surface2 = VGMixColors(effective, white, 0.13); p.stroke = VGMixColors(effective, white, 0.20);
+            p.text = white; p.secondary = VGMixColors(effective, white, 0.66); p.tertiary = VGMixColors(effective, white, 0.42);
+            p.tabBar = VGMixColors(effective, black, 0.35); p.listBackground = VGMixColors(effective, black, 0.2); p.editButton = VGMixColors(effective, white, 0.22);
+            p.playerBackground = VGMixColors(effective, black, 0.35); p.playerSurface = p.surface; p.playerStroke = p.stroke; p.playerSecondary = p.secondary;
+        }
+        p.selectedCell = VGMixColors(effective, p.accent, light ? 0.16 : 0.18);
+    }
+    // Accent: only when it differs from the preset's, so an untouched preset looks exactly like itself.
+    if (spec.accent != VGHexOf(b.accent)) {
+        UIColor *acc = VGHex(spec.accent);
+        CGFloat r = 0, g = 0, bl = 0, al = 0; [acc getRed:&r green:&g blue:&bl alpha:&al];
+        p.accent = acc; p.accent2 = VGMixColors(acc, white, 0.18); p.accentSoft = VGMixColors(acc, white, 0.45);
+        p.selectedCell = VGMixColors(p.background, acc, p.light ? 0.16 : 0.18);
+        p.onAccent = (0.299 * r + 0.587 * g + 0.114 * bl) > 0.6 ? VGHex(0x0A0A0D) : white;
+        p.logoColor = acc; p.flat = NO; p.glass = b.glass;
+    }
+    // Advanced colors.
+    NSDictionary<NSString *, NSNumber *> *o = spec.overrides;
+    if (o[@"text"]) p.text = VGHex(o[@"text"].unsignedIntValue);
+    if (o[@"secondary"]) { p.secondary = VGHex(o[@"secondary"].unsignedIntValue); p.tertiary = VGMixColors(p.secondary, p.background, 0.45); }
+    if (o[@"surface"]) { p.surface = VGHex(o[@"surface"].unsignedIntValue); p.surface2 = VGMixColors(p.surface, p.light ? black : white, 0.08); }
+    if (o[@"stroke"]) p.stroke = VGHex(o[@"stroke"].unsignedIntValue);
+    if (o[@"buttonBg"]) p.buttonBg = VGHex(o[@"buttonBg"].unsignedIntValue);
+    if (o[@"buttonFg"]) p.buttonFg = VGHex(o[@"buttonFg"].unsignedIntValue);
+    if (o[@"selected"]) p.selectedCell = VGHex(o[@"selected"].unsignedIntValue);
+    if (o[@"bars"]) p.tabBar = VGHex(o[@"bars"].unsignedIntValue);
+    return p;
+}
+
 @end
+
+
+static UIColor *sCarbonCached; static CGSize sCarbonSize; static NSString *sCarbonKey, *sCarbonPending; static NSMutableDictionary *sIconCache;
+
+/// Rebuilds the custom slot from the applied custom theme and forgets cached pictures and icons.
+void VGResetCustomThemeCache(void) {
+    sCarbonCached = nil; sCarbonKey = nil; sCarbonPending = nil;
+    [sIconCache removeObjectForKey:@(VGCustomThemeSlot)];
+    NSArray<VGPalette *> *all = VGPalette.all;
+    if (all.count <= VGCustomThemeSlot) return;
+    VGThemeSpec *spec = VGThemeStore.active ?: [VGThemeSpec specFromPreset:0];
+    [all[VGCustomThemeSlot] adopt:[VGPalette paletteForSpec:spec]];
+}
 
 @implementation VGGradientView
 + (Class)layerClass { return CAGradientLayer.class; }
@@ -170,7 +278,19 @@ static UIButton *makeButton(NSString *title, NSString *icon, UIColor *bg, UIColo
     return b;
 }
 
+void VGPrimaryButtonColors(VGPalette *p, UIColor **bg, UIColor **fg) {
+    if (p.buttonBg) { *bg = p.buttonBg; *fg = p.buttonFg ?: (p.light ? UIColor.blackColor : UIColor.whiteColor); return; }
+    if (p.buttonFg && p.onAccent) { *bg = p.accent; *fg = p.buttonFg; return; }
+    if (p.onAccent) { *bg = p.accent; *fg = p.buttonFg ?: p.onAccent; return; }
+    if (p.flat) { *bg = VGHex(0x3A3A3A); *fg = p.buttonFg ?: UIColor.whiteColor; return; }
+    if (p.light) { *bg = p.text; *fg = p.buttonFg ?: UIColor.whiteColor; return; }
+    *bg = UIColor.whiteColor; *fg = p.buttonFg ?: VGHex(0x0A0A0D);
+}
+
 UIButton *VGPrimaryButton(NSString *title, NSString *icon) {
+    UIColor *bg = nil, *fg = nil;
+    VGPrimaryButtonColors(VGPalette.current, &bg, &fg);
+    if (bg) return makeButton(title, icon, bg, fg);
     if (VGPalette.current.onAccent) return makeButton(title, icon, VGAccent, VGPalette.current.onAccent);
     if (VGPalette.current.flat) return makeButton(title, icon, VGHex(0x3A3A3A), UIColor.whiteColor);   // greys-only themes: no bright white button
     return VGPalette.current.light ? makeButton(title, icon, VGText, UIColor.whiteColor) : makeButton(title, icon, UIColor.whiteColor, VGHex(0x0A0A0D));
@@ -183,8 +303,8 @@ UIButton *VGSecondaryButton(NSString *title, NSString *icon) {
 UIImage *VGThemedIcon(void) {
     UIImage *base = [UIImage imageNamed:@"AppIcon60x60"] ?: [UIImage imageNamed:@"AppIcon60x60@3x"];
     if (!base || VGPalette.selectedIndex == 0) return base;
-    static NSMutableDictionary *cache;
-    if (!cache) cache = [NSMutableDictionary dictionary];
+    if (!sIconCache) sIconCache = [NSMutableDictionary dictionary];
+    NSMutableDictionary *cache = sIconCache;
     NSNumber *key = @(VGPalette.selectedIndex);
     if (cache[key]) return cache[key];
     CGFloat h0 = 0, h1 = 0, sat = 0, br = 0, al = 0;
@@ -211,20 +331,44 @@ UIImage *VGThemedIcon(void) {
 }
 
 UIColor *VGCarbonColor(void) {
-    static UIColor *cached; static CGSize cachedSize;
     CGSize s = UIScreen.mainScreen.bounds.size;
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) { CGFloat m = MAX(s.width, s.height); s = CGSizeMake(m, m); }
-    if (cached && CGSizeEqualToSize(s, cachedSize)) return cached;
+    VGPalette *cur = VGPalette.current;
+    if (VGPalette.selectedIndex == VGCustomThemeSlot) {
+        VGThemeSpec *spec = VGThemeStore.active;
+        if (!spec) return cur.background;
+        NSString *key = [spec.cacheKey stringByAppendingFormat:@"|%.0fx%.0f", s.width, s.height];
+        if (sCarbonCached && [sCarbonKey isEqual:key]) return sCarbonCached;
+        CGFloat scale = UIScreen.mainScreen.scale;
+        if ([spec.bgMode isEqual:@"photo"]) {
+            // Photos are decoded and blurred off the main thread; the pages show the plain color until the picture is ready.
+            if (![sCarbonPending isEqual:key]) {
+                sCarbonPending = key;
+                VGRenderThemeBackgroundAsync(spec, s, scale, nil, ^(UIImage *img) {
+                    if (![sCarbonPending isEqual:key] || !img) return;
+                    sCarbonCached = [UIColor colorWithPatternImage:img]; sCarbonKey = key; sCarbonSize = s;
+                    [NSNotificationCenter.defaultCenter postNotificationName:VGThemeDidChangeNotification object:nil];
+                });
+            }
+            return cur.background;
+        }
+        UIImage *img = VGRenderThemeBackground(spec, s, scale, nil);
+        if (!img) return cur.background;
+        sCarbonCached = [UIColor colorWithPatternImage:img]; sCarbonKey = key; sCarbonSize = s;
+        return sCarbonCached;
+    }
+    NSString *key = [NSString stringWithFormat:@"carbon|%.0fx%.0f", s.width, s.height];
+    if (sCarbonCached && [sCarbonKey isEqual:key]) return sCarbonCached;
     UIImage *img = [UIImage imageWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"carbon" ofType:@"jpg"]];
-    if (!img) return [VGPalette current].background;
+    if (!img) return cur.background;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:s];
     UIImage *fit = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
         CGFloat k = MAX(s.width / img.size.width, s.height / img.size.height);
         CGSize d = CGSizeMake(img.size.width * k, img.size.height * k);
         [img drawInRect:CGRectMake((s.width - d.width) / 2, 0, d.width, d.height)];
     }];
-    cached = [UIColor colorWithPatternImage:fit]; cachedSize = s;
-    return cached;
+    sCarbonCached = [UIColor colorWithPatternImage:fit]; sCarbonKey = key; sCarbonSize = s;
+    return sCarbonCached;
 }
 
 NSString *VGAccentCSS(void) {

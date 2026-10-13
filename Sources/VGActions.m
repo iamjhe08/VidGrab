@@ -146,7 +146,7 @@ static __weak UIView *gToast;
     UILabel *l = [UILabel new];
     l.text = text;
     l.font = VGFont(15, UIFontWeightSemibold);
-    l.textColor = UIColor.whiteColor;
+    l.textColor = VGText;
     UIStackView *s = [[UIStackView alloc] initWithArrangedSubviews:@[iv, l]];
     s.spacing = 8;
     s.alignment = UIStackViewAlignmentCenter;
